@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>그린리모델링 손익 계산기</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app-container">
+        <!-- Screen 1: Intro -->
+        <div id="screen-intro" class="screen active">
+            <div class="intro-content">
+                <h1 class="main-title">그린 리모델링<br>손익 계산기</h1>
+                <p class="desc" style="margin-bottom: 30px; font-weight: 600;">데이터 기반 맞춤형 에너지 솔루션</p>
+                <div class="illustration-area" style="width: 100%; display: flex; justify-content: center;">
+                    <img src="intro-image.png" alt="Hero Illustration" class="hero-image">
+                </div>
+            </div>
+            <button class="btn-primary" onclick="nextScreen('screen-address')">시작하기</button>
+        </div>
+
+        <!-- Screen 2: Address -->
+        <div id="screen-address" class="screen">
+            <div class="header">
+                <button class="btn-back" onclick="goBack()">←</button>
+                <h2 class="sub-title">건물 주소 입력</h2>
+            </div>
+            <div class="input-group">
+                <input type="text" id="address-input" placeholder="주소를 입력해주세요" value="">
+                <button class="btn-search" onclick="searchAddressMap()">🔍</button>
+            </div>
+            <div id="map" style="height: 200px; border-radius: 12px; margin-bottom: 15px; z-index: 1;"></div>
+
+            <p class="status-text" id="search-status">공공 데이터 연동 대기 중...</p>
+            <button class="btn-primary" onclick="searchBuildingAndNext()">분석 시작</button>
+        </div>
+
+        <!-- Screen 3: Building Status -->
+        <div id="screen-status" class="screen">
+            <div class="header">
+                <button class="btn-back" onclick="goBack()">←</button>
+                <h2 class="sub-title">건물 현황 및 데이터</h2>
+            </div>
+            <p class="desc">자동적으로 공공 기관 기반 데이터 확보</p>
+            <div class="data-card">
+                <div class="data-row"><span>주소</span><span class="value" id="val-address">전남광주 북구 우치로 60</span></div>
+                <div class="data-row"><span>준공연도</span><span class="value badge">30+ 년</span></div>
+                <div class="data-row">
+                    <span>건물용도</span>
+                    <select id="input-usage" class="inline-select">
+                        <option value="주거용">주거용</option>
+                        <option value="상업용">상업용</option>
+                        <option value="산업용">산업용</option>
+                    </select>
+                </div>
+                <div class="data-row"><span>연면적 (m²)</span><input type="number" id="input-area" class="inline-input" value="84"></div>
+                <div class="data-row"><span>층수 (층)</span><input type="number" id="input-floors" class="inline-input" value="1"></div>
+            </div>
+            <h3 class="section-title">현재 예측 에너지 사용량 (EUI 모델)</h3>
+            <div class="energy-preview" style="display: flex; gap: 10px; margin-bottom: 20px;">
+                <div class="e-box" style="flex:1; background:#fff; padding:15px; border-radius:12px; box-shadow:0 4px 6px rgba(0,0,0,0.05); text-align:center;">
+                    <div style="font-size:12px; color:#666; margin-bottom:5px;">⚡ 전기 (예상)</div>
+                    <strong id="val-elec" style="font-size:18px; color:#1a4d41;">3,500 kWh</strong>
+                </div>
+                <div class="e-box" style="flex:1; background:#fff; padding:15px; border-radius:12px; box-shadow:0 4px 6px rgba(0,0,0,0.05); text-align:center;">
+                    <div style="font-size:12px; color:#666; margin-bottom:5px;">🔥 가스 (예상)</div>
+                    <strong id="val-gas" style="font-size:18px; color:#1a4d41;">25,000 MJ</strong>
+                </div>
+            </div>
+            <button class="btn-primary" onclick="nextScreen('screen-survey')">다음</button>
+        </div>
+
+        <!-- Screen 4: Survey -->
+        <div id="screen-survey" class="screen">
+            <div class="header">
+                <button class="btn-back" onclick="goBack()">←</button>
+                <h2 class="sub-title">추가 현재 상태 진단</h2>
+            </div>
+            <p class="desc">거주 환경을 체크해주세요 (<span id="survey-counter">1</span>/6)</p>
+            <div class="survey-container" id="survey-container">
+                <!-- Survey questions injected via JS -->
+            </div>
+            <div class="progress-bar-bg"><div class="progress-bar-fill" id="survey-progress"></div></div>
+            <button class="btn-primary mt-15" id="btn-survey-next" onclick="handleSurveyNext()">다음 문항</button>
+        </div>
+
+        <!-- Screen 5: Cost -->
+        <div id="screen-cost" class="screen">
+            <div class="header">
+                <button class="btn-back" onclick="goBack()">←</button>
+                <h2 class="sub-title">예상 리모델링 공사비</h2>
+            </div>
+            <p class="desc">Geometry Engine 기반 견적 산출</p>
+            <div class="cost-card glass">
+                <h3 class="package-name" id="package-name">스마트형 패키지</h3>
+                <div class="cost-row"><span>창호 교체 (단열)</span><span id="cost-window">0 원</span></div>
+                <div style="font-size: 11px; color: #888; text-align: right; margin-top: -8px; margin-bottom: 8px;" id="basis-window">산출근거: -</div>
+                <div class="cost-row"><span>단열 시공 (내벽/북측)</span><span id="cost-insul">0 원</span></div>
+                <div style="font-size: 11px; color: #888; text-align: right; margin-top: -8px; margin-bottom: 8px;" id="basis-insul">산출근거: -</div>
+                <div class="cost-row"><span>설비 교체 (보일러 등)</span><span id="cost-hvac">0 원</span></div>
+                <div style="font-size: 11px; color: #888; text-align: right; margin-top: -8px; margin-bottom: 8px;" id="basis-hvac">산출근거: -</div>
+                <div class="divider"></div>
+                <div class="cost-row total"><span>총 금액 (C)</span><span id="cost-total" class="highlight-text">0 원</span></div>
+            </div>
+            <button class="btn-primary" onclick="nextScreen('screen-energy-analysis')">다음</button>
+        </div>
+
+        <!-- Screen 6: Energy Analysis -->
+        <div id="screen-energy-analysis" class="screen">
+            <div class="header">
+                <button class="btn-back" onclick="goBack()">←</button>
+                <h2 class="sub-title">에너지 상세 분석</h2>
+            </div>
+            <div class="chart-container">
+                <canvas id="energyLineChart"></canvas>
+            </div>
+            <div class="banner highlight-bg">
+                <h3 id="banner-saving-text">연간 약 0만 원 절감!</h3>
+            </div>
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <span>예상 절감률</span>
+                    <strong id="stat-saving-rate">0%</strong>
+                </div>
+                <div class="stat-box">
+                    <span>연간 예상 절감액</span>
+                    <strong id="stat-saving-amount">0 원</strong>
+                </div>
+            </div>
+            <button class="btn-primary" onclick="nextScreen('screen-roi')">다음</button>
+        </div>
+
+        <!-- Screen 7/8: ROI & Report -->
+        <div id="screen-roi" class="screen">
+            <div class="header">
+                <button class="btn-back" onclick="goBack()">←</button>
+                <h2 class="sub-title">연간 손익 상세 분석 (ROI)</h2>
+            </div>
+            <div class="roi-card glass">
+                <div class="roi-row"><span>총 예상 공사비</span><strong id="roi-cost">0 원</strong></div>
+                <div class="roi-row"><span>예상 연간 절감액</span><strong class="highlight-text" id="roi-saving">0 원</strong></div>
+                <div class="divider"></div>
+                <div class="roi-row total"><span>예상 투자 회수 기간</span><strong id="roi-payback">0 년</strong></div>
+            </div>
+            <div class="chart-container mt-15">
+                <canvas id="roiLineChart"></canvas>
+            </div>
+            <h3 class="section-title mt-15">상세 보기 (성능 및 환경 가치)</h3>
+            <div class="data-card small-text">
+                <div class="data-row"><span>1차 EUI 절감률</span><span id="detail-eui">0 %</span></div>
+                <div class="data-row"><span>연간 CO₂ 감축량</span><span id="detail-co2">0 kgCO₂</span></div>
+                <div class="data-row"><span>효율등급 예측</span><span><span class="badge gray">E등급</span> ➔ <span class="badge green" id="grade-after">B등급</span></span></div>
+            </div>
+            <button class="btn-primary mt-15" onclick="nextScreen('screen-final')">리포트 생성</button>
+        </div>
+
+        <!-- Screen 9: Final -->
+        <div id="screen-final" class="screen">
+            <div class="header">
+                <button class="btn-back" onclick="goBack()">←</button>
+                <h2 class="sub-title">그린 리모델링 분석 리포트</h2>
+            </div>
+            <div class="report-icon">📄✨</div>
+            <div class="final-buttons">
+                <button class="btn-primary">전문 상담 신청</button>
+                <button class="btn-secondary">시공 업체 찾기</button>
+                <button class="btn-outline">리포트 공유</button>
+            </div>
+            <button class="btn-text" onclick="resetApp()">처음으로 돌아가기</button>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
