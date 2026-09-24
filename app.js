@@ -71,7 +71,7 @@ async function searchBuildingAndNext() {
     statusText.innerText = "데이터 조회 및 EUI 예측 중...";
     
     try {
-        const res = await fetch('http://localhost:5000/api/search?address=' + encodeURIComponent(address));
+        const res = await fetch('/api/search?address=' + encodeURIComponent(address));
         const data = await res.json();
         
         if (!res.ok) {

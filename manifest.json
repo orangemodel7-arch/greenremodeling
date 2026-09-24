@@ -1,0 +1,16 @@
+{
+  "name": "Green Remodeling",
+  "short_name": "GreenApp",
+  "description": "그린리모델링 AI 분석 솔루션",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#1a4d41",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3254/3254245.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
