@@ -212,7 +212,7 @@ function showScreen(targetId) {
         }, 450);
     } else if (targetId === 'screen-survey') {
         renderSurvey();
-    } else if (targetId === 'screen-cost') {
+    } else if (targetId === 'screen-packages') {
         runEngines();
     } else if (targetId === 'screen-energy-analysis') {
         renderEnergyChart();
@@ -263,7 +263,7 @@ function handleSurveyNext() {
         document.getElementById('survey-progress').style.width = `${((currentSurveyIndex + 1) / 6) * 100}%`;
         renderSurvey();
     } else {
-        nextScreen('screen-cost');
+        nextScreen('screen-packages');
     }
 }
 
@@ -276,6 +276,9 @@ let simData = {
     afterCost: 0,
     savingRate: 0
 };
+
+let calculatedPackages = [];
+let selectedPackageIndex = 1;
 
 // --- Engine Logic ---
 function runEngines() {
@@ -302,71 +305,136 @@ function runEngines() {
         windowArea = W * 0.10;
     }
 
-    // 3. Survey Score -> Package Selection
-    let totalScore = Object.values(surveyAnswers).reduce((a, b) => a + b, 0);
-    // Score range: 6 to 18
-    let pkg = "실속형";
-    let savingRate = 0.11;
-    if (totalScore <= 10) {
-        pkg = "완결형"; // Bad state -> Needs premium
-        savingRate = 0.675;
-    } else if (totalScore <= 15) {
-        pkg = "스마트형";
-        savingRate = 0.35;
-    }
-
-    // 4. Cost Engine
-    // Use predicted EUI Energy (Electric + Gas) from ML Model
+    const windowCount = Math.ceil(windowArea / 3);
+    const totalInsulArea = insulArea + roofArea;
+    const hvacCount = Math.max(1, Math.ceil(area / 120));
+    
     const currentElecKwh = simData.currentElecKwh || (area * 50); 
     const currentGasMj = simData.currentGasMj || (area * 300);
-    const elecCost = currentElecKwh * 150; // 150 won/kWh
-    const gasCost = currentGasMj * 20;     // 20 won/MJ
+    const elecCost = currentElecKwh * 150;
+    const gasCost = currentGasMj * 20;
     const currentTotalCost = elecCost + gasCost;
-    const annualSaving = currentTotalCost * savingRate;
 
-    // Unit prices (Updated with real standards)
-    // 창호: 재료비 280,000원/㎡ + 시공비 103,673원/개소 (평균 3㎡당 1개소로 가정)
-    const windowCount = Math.ceil(windowArea / 3);
-    const costWindow = (windowArea * 280000) + (windowCount * 103673);
-    
-    // 단열: 재료비 25,000원/㎡ + 시공비 15,016원/㎡
-    const costInsul = (insulArea + roofArea) * (25000 + 15016);
-    
-    // 설비: 주거용 보일러(850k + 150k) vs 상업용 EHP(2.8M + 450k)
-    // 건물 규모(120㎡당 1대 기준)에 비례하여 대수 산정
-    const hvacCount = Math.max(1, Math.ceil(area / 120));
-    const hvacCost = (usage === '주거용') 
-        ? hvacCount * (850000 + 150000) 
-        : hvacCount * (2800000 + 450000);
+    const baseHvacPrice = (usage === '주거용') ? (850000 + 150000) : (2800000 + 450000);
 
-    const totalCost = costWindow + costInsul + hvacCost;
-    
-    // Govt Support (Interest subsidy) -> Mocked as a pure discount for visual simplicity here, though formula implies interest deduction
-    const govSupport = totalCost * 0.10; // 10% support assumed over 5 years
+    // 3. AI Survey Recommendation Logic
+    let totalScore = Object.values(surveyAnswers).reduce((a, b) => a + b, 0);
+    let recommendedIdx = 1; // Default Smart
+    if (totalScore <= 10) recommendedIdx = 2; // Bad state -> Comprehensive
+    else if (totalScore >= 16) recommendedIdx = 0; // Good state -> Economy
 
-    // Save globally
+    // 4. Calculate 3 Packages independently
+    calculatedPackages = [
+        {
+            name: "실속형",
+            desc: "가성비 보완 시공 (최단기 회수)",
+            savingRate: 0.15,
+            costWindow: windowArea * 50000,
+            basisWindow: `기밀 보강 및 단열 필름: ${Math.round(windowArea)}㎡ × 50,000원`,
+            costInsul: (totalInsulArea * 0.2) * 40000,
+            basisInsul: `취약부 부분 단열: ${Math.round(totalInsulArea * 0.2)}㎡ × 40,000원`,
+            costHvac: 0,
+            basisHvac: `설비 교체 없음`,
+            isRecommended: recommendedIdx === 0
+        },
+        {
+            name: "스마트형",
+            desc: "정부지원 타겟 전면 교체 (표준)",
+            savingRate: 0.35,
+            costWindow: (windowArea * 280000) + (windowCount * 103673),
+            basisWindow: `고효율 이중창: ${Math.round(windowArea)}㎡ × 28만 + ${windowCount}개소 시공비`,
+            costInsul: totalInsulArea * 40016,
+            basisInsul: `전체 단열재 보강: ${Math.round(totalInsulArea)}㎡ × 40,016원`,
+            costHvac: hvacCount * baseHvacPrice,
+            basisHvac: `고효율 설비 교체: ${hvacCount}대 × ${baseHvacPrice.toLocaleString()}원`,
+            isRecommended: recommendedIdx === 1
+        },
+        {
+            name: "종합형",
+            desc: "프리미엄 제로에너지화 (자산가치 극대화)",
+            savingRate: 0.60,
+            costWindow: (windowArea * 500000) + (windowCount * 103673),
+            basisWindow: `방위 맞춤 삼중창: ${Math.round(windowArea)}㎡ × 50만 + ${windowCount}개소 시공비`,
+            costInsul: totalInsulArea * 80000,
+            basisInsul: `프리미엄 외단열: ${Math.round(totalInsulArea)}㎡ × 80,000원`,
+            costHvac: (hvacCount * baseHvacPrice) + 5000000,
+            basisHvac: `고효율 설비 + 환기/태양광: 설비 + 5,000,000원 추가`,
+            isRecommended: recommendedIdx === 2
+        }
+    ];
+
+    // Calc totals and payback for each
+    calculatedPackages.forEach(pkg => {
+        pkg.totalCost = pkg.costWindow + pkg.costInsul + pkg.costHvac;
+        pkg.annualSaving = currentTotalCost * pkg.savingRate;
+        const r = 0.02; // 2% discount rate for payback
+        if (pkg.totalCost * r < pkg.annualSaving) {
+            pkg.payback = -Math.log(1 - (pkg.totalCost * r) / pkg.annualSaving) / Math.log(1 + r);
+        } else {
+            pkg.payback = 999;
+        }
+    });
+
+    renderPackageCards();
+}
+
+function renderPackageCards() {
+    const container = document.getElementById('packages-container');
+    if (!container) return;
+    
+    let html = '';
+    calculatedPackages.forEach((pkg, idx) => {
+        const paybackText = pkg.payback > 100 ? '회수 불가' : (pkg.payback.toFixed(1) + '년');
+        const borderStyle = pkg.isRecommended ? 'border: 2px solid #1a4d41;' : 'border: 1px solid #ddd;';
+        
+        html += `
+        <div class="data-card" style="cursor:pointer; position:relative; ${borderStyle} transition: all 0.2s;" onclick="selectPackage(${idx})">
+            ${pkg.isRecommended ? '<div class="badge green" style="position:absolute; top:-10px; right:15px; z-index:10; font-size:11px; padding:4px 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">AI 추천✨</div>' : ''}
+            <h3 style="margin:0 0 5px 0; color:#1a4d41; font-size:18px;">${pkg.name}</h3>
+            <p style="font-size:12px; color:#666; margin:0 0 15px 0;">${pkg.desc}</p>
+            <div style="display:flex; justify-content:space-between; font-size:14px; margin-bottom:8px;">
+                <span>총 예상 공사비</span><strong style="color:#1a4d41;">${Math.round(pkg.totalCost / 10000).toLocaleString()}만 원</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:14px; margin-bottom:8px;">
+                <span>연간 절감액</span><strong>${Math.round(pkg.annualSaving / 10000).toLocaleString()}만 원</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:14px; color:#f39c12; font-weight:bold;">
+                <span>투자 회수 기간</span><span>${paybackText}</span>
+            </div>
+        </div>
+        `;
+    });
+    container.innerHTML = html;
+}
+
+function selectPackage(idx) {
+    selectedPackageIndex = idx;
+    const pkg = calculatedPackages[idx];
+    
+    // Apply selected package to simData for downstream charts
+    const currentElecKwh = simData.currentElecKwh || 0; 
+    const currentGasMj = simData.currentGasMj || 0;
+    const currentTotalCost = (currentElecKwh * 150) + (currentGasMj * 20);
+
     simData.beforeCost = currentTotalCost;
-    simData.afterCost = currentTotalCost - annualSaving;
-    simData.annualSaving = annualSaving;
-    simData.totalCost = totalCost;
-    simData.savingRate = savingRate;
-    simData.payback = totalCost / annualSaving;
+    simData.afterCost = currentTotalCost - pkg.annualSaving;
+    simData.annualSaving = pkg.annualSaving;
+    simData.totalCost = pkg.totalCost;
+    simData.savingRate = pkg.savingRate;
+    simData.payback = pkg.payback;
 
-    // Update DOM
-    document.getElementById('package-name').innerText = `${pkg} 리모델링 패키지`;
-    document.getElementById('cost-window').innerText = Math.round(costWindow).toLocaleString() + ' 원';
-    document.getElementById('cost-insul').innerText = Math.round(costInsul).toLocaleString() + ' 원';
-    document.getElementById('cost-hvac').innerText = Math.round(hvacCost).toLocaleString() + ' 원';
-    document.getElementById('cost-total').innerText = Math.round(totalCost).toLocaleString() + ' 원';
-    if(document.getElementById('cost-support')) {
-        document.getElementById('cost-support').innerText = '-' + Math.round(govSupport).toLocaleString() + ' 원';
-    }
+    // Update Screen 5 DOM (Cost details)
+    document.getElementById('package-name').innerText = `${pkg.name} 리모델링 패키지`;
+    document.getElementById('cost-window').innerText = Math.round(pkg.costWindow).toLocaleString() + ' 원';
+    document.getElementById('cost-insul').innerText = Math.round(pkg.costInsul).toLocaleString() + ' 원';
+    document.getElementById('cost-hvac').innerText = Math.round(pkg.costHvac).toLocaleString() + ' 원';
+    document.getElementById('cost-total').innerText = Math.round(pkg.totalCost).toLocaleString() + ' 원';
+    
+    document.getElementById('basis-window').innerText = pkg.basisWindow;
+    document.getElementById('basis-insul').innerText = pkg.basisInsul;
+    document.getElementById('basis-hvac').innerText = pkg.basisHvac;
 
-    // 산출근거 표시
-    const hvacPrice = (usage === '주거용') ? (850000 + 150000) : (2800000 + 450000);
-    document.getElementById('basis-window').innerText = `산출근거: ${Math.round(windowArea)}㎡ × 280,000원 + ${windowCount}개소 × 103,673원`;
-    document.getElementById('basis-insul').innerText = `산출근거: ${Math.round(insulArea + roofArea)}㎡ × 40,016원`;
-    document.getElementById('basis-hvac').innerText = `산출근거: ${hvacCount}대 × ${hvacPrice.toLocaleString()}원`;
+    nextScreen('screen-cost');
 }
 
 // --- Charts ---

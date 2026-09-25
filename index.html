@@ -91,6 +91,18 @@
             <button class="btn-primary mt-15" id="btn-survey-next" onclick="handleSurveyNext()">다음 문항</button>
         </div>
 
+        <!-- Screen 4.5: Package Selection -->
+        <div id="screen-packages" class="screen">
+            <div class="header">
+                <button class="btn-back" onclick="goBack()">←</button>
+                <h2 class="sub-title">맞춤형 패키지 비교</h2>
+            </div>
+            <p class="desc">AI 진단 및 공공 데이터를 바탕으로<br>건물에 적합한 3가지 패키지를 제안합니다.</p>
+            <div class="packages-container" id="packages-container" style="display:flex; flex-direction:column; gap:15px; margin-top:20px;">
+                <!-- Cards injected via JS -->
+            </div>
+        </div>
+
         <!-- Screen 5: Cost -->
         <div id="screen-cost" class="screen">
             <div class="header">
@@ -176,7 +188,7 @@
             <button class="btn-text" onclick="resetApp()">처음으로 돌아가기</button>
         </div>
     </div>
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
