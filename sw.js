@@ -1,4 +1,4 @@
-const CACHE_NAME = 'green-app-v2';
+const CACHE_NAME = 'green-app-v3';
 const urlsToCache = [
   '/',
   '/index.html',
