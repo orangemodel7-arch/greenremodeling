@@ -68,7 +68,7 @@ let surveyAnswers = {};
 async function searchBuildingAndNext() {
     const address = document.getElementById('address-input').value;
     const statusText = document.getElementById('search-status');
-    statusText.innerText = "실제 데이터셋 기반 조회 중...";
+    statusText.innerText = "데이터 조회 및 EUI 예측 중...";
     
     if (!address) {
         alert("주소를 입력해주세요.");
@@ -77,67 +77,43 @@ async function searchBuildingAndNext() {
     }
     
     try {
-        // Flask 서버 없이 프론트엔드에서 직접 CSV(실제 데이터셋)를 로드하여 분석
-        const res = await fetch('model_data/gwangju_building_energy.csv');
-        if (!res.ok) throw new Error("CSV 데이터를 불러올 수 없습니다.");
-        const text = await res.text();
+        const res = await fetch('/api/search?address=' + encodeURIComponent(address.trim()));
+        const ctype = res.headers.get('content-type') || '';
+        if (!ctype.includes('application/json')) throw new Error('서버 응답이 JSON이 아님 (status ' + res.status + ')');
+        const data = await res.json();
         
-        const lines = text.split(/\r?\n/);
-        let matchedRow = null;
-        
-        // 주소의 공백을 제거하여 부분 일치율을 높임
-        const searchAddr = address.replace(/\s/g, '');
-        
-        // CSV 파싱 (헤더 건너뛰고 첫 번째 매칭되는 건물 탐색)
-        for (let i = 1; i < lines.length; i++) {
-            const row = lines[i].split(',');
-            if (row.length < 11) continue;
-            
-            const rowAddr = (row[2] || '').replace(/\s/g, '');
-            if (rowAddr.includes(searchAddr)) {
-                matchedRow = row;
-                break;
-            }
-        }
-        
-        if (!matchedRow) {
-            alert(`'${address}'에 해당하는 건물을 실제 데이터셋에서 찾을 수 없습니다.`);
+        if (!res.ok) {
+            alert(data.error || "검색 실패");
             statusText.innerText = "공공 데이터 연동 대기 중...";
             return;
         }
         
-        // 인덱스 -> 2: 대지위치, 4: 주용도, 7: 연식, 8: 연면적, 9: 전기(kWh), 10: 가스(MJ)
-        const bAddress = matchedRow[2];
-        const bUsage = matchedRow[4];
-        const bYear = parseInt(matchedRow[7]) || 30;
-        const bArea = parseFloat(matchedRow[8]) || 84;
-        const elecRaw = parseFloat(matchedRow[9]);
-        const gasRaw  = parseFloat(matchedRow[10]);
-        const bElec = Number.isFinite(elecRaw) ? elecRaw : bArea * 50;
+        // Update DOM
+        document.getElementById('val-address').innerText = data.address;
+        document.querySelector('#screen-status .badge').innerText = data.year + ' 년';
+        document.getElementById('input-usage').value = data.usage_ui;
+        document.getElementById('input-area').value = Math.round(data.area);
+        
+        const elecRaw = parseFloat(data.pred_elec_kwh);
+        const gasRaw  = parseFloat(data.pred_gas_mj);
+        const bElec = Number.isFinite(elecRaw) ? elecRaw : data.area * 50;
         const bGas  = Number.isFinite(gasRaw)  ? gasRaw  : 0;
-        
-        let uiUsage = "상업용";
-        if (bUsage.includes("주택")) uiUsage = "주거용";
-        else if (bUsage.includes("공장") || bUsage.includes("창고")) uiUsage = "산업용";
-        
-        document.getElementById('val-address').innerText = bAddress;
-        document.querySelector('#screen-status .badge').innerText = bYear + ' 년';
-        document.getElementById('input-usage').value = uiUsage;
-        document.getElementById('input-area').value = Math.round(bArea);
-        
+
         document.getElementById('val-elec').innerText = Math.round(bElec).toLocaleString() + ' kWh';
         document.getElementById('val-gas').innerText =
             bGas > 0 ? Math.round(bGas).toLocaleString() + ' MJ' : '가스 미사용 (0 MJ)';
         
+        // Store
         simData.currentElecKwh = bElec;
         simData.currentGasMj = bGas;
         
         statusText.innerText = "공공 데이터 연동 대기 중...";
         nextScreen('screen-status');
     } catch (e) {
-        console.error("데이터셋 로드 에러:", e);
-        alert("실제 데이터셋(CSV)을 읽어오는 데 실패했습니다.");
-        statusText.innerText = "공공 데이터 연동 대기 중...";
+        console.error("Error in searchBuildingAndNext:", e);
+        // 서버 응답 실패(무료 서버 절전 해제 중 등) 시 임시 데이터로 진행하지 않고 재시도를 안내
+        alert("서버를 준비하는 중입니다. 약 30초 후 다시 [검색]을 눌러주세요.");
+        statusText.innerText = "서버 준비 중... 잠시 후 다시 검색해주세요.";
     }
 }
 
@@ -164,13 +140,7 @@ function initMap() {
         
         map.on('click', function(e) {
             marker.setLatLng(e.latlng);
-            fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${e.latlng.lat}&lon=${e.latlng.lng}`)
-                .then(res => res.json())
-                .then(data => {
-                    if(data && data.display_name) {
-                        document.getElementById('address-input').value = data.display_name;
-                    }
-                });
+            // 지도 클릭은 위치 확인용이며, 주소 입력칸은 사용자가 직접 입력한 값을 유지함
         });
     } else {
         setTimeout(() => map.invalidateSize(), 100);
@@ -464,10 +434,12 @@ function renderEnergyChart() {
     const ctx = document.getElementById('energyLineChart').getContext('2d');
     if(eChart) eChart.destroy();
 
-    // Mock monthly curve
+    // 월별 계절 패턴(냉난방 부하 비율)에 연간 예상 에너지 비용을 배분 (단위: 만 원)
     const months = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
-    const curveBefore = [150, 130, 100, 80, 90, 140, 200, 210, 120, 90, 110, 160];
-    const curveAfter = curveBefore.map(v => v * (1 - simData.savingRate));
+    const seasonal = [150, 130, 100, 80, 90, 140, 200, 210, 120, 90, 110, 160];
+    const seasonalSum = seasonal.reduce((a, b) => a + b, 0);
+    const curveBefore = seasonal.map(w => Math.round((simData.beforeCost * w / seasonalSum) / 10000 * 10) / 10);
+    const curveAfter = curveBefore.map(v => Math.round(v * (1 - simData.savingRate) * 10) / 10);
 
     eChart = new Chart(ctx, {
         type: 'line',
@@ -475,7 +447,7 @@ function renderEnergyChart() {
             labels: months,
             datasets: [
                 {
-                    label: '현재 예상 요금',
+                    label: '현재 예상 요금 (만 원)',
                     data: curveBefore,
                     borderColor: '#a0d6c9',
                     borderWidth: 2,
@@ -483,7 +455,7 @@ function renderEnergyChart() {
                     fill: false
                 },
                 {
-                    label: '리모델링 후',
+                    label: '리모델링 후 (만 원)',
                     data: curveAfter,
                     borderColor: '#1a4d41',
                     borderWidth: 3,
@@ -519,11 +491,15 @@ function renderRoiChart() {
     
     // Details
     document.getElementById('detail-eui').innerText = (simData.savingRate * 100).toFixed(1) + ' %';
-    document.getElementById('detail-co2').innerText = Math.round(simData.annualSaving * 0.05).toLocaleString() + ' kgCO₂';
+    // 절감 에너지량 × 배출계수 (전력 0.4781 kgCO₂/kWh, 도시가스(LNG) 0.0561 kgCO₂/MJ)
+    const savedElecKwh = (simData.currentElecKwh || 0) * simData.savingRate;
+    const savedGasMj = (simData.currentGasMj || 0) * simData.savingRate;
+    const co2 = savedElecKwh * 0.4781 + savedGasMj * 0.0561;
+    document.getElementById('detail-co2').innerText = Math.round(co2).toLocaleString() + ' kgCO₂';
     
-    let afterGrade = "B등급";
-    if(simData.savingRate > 0.5) afterGrade = "1++등급";
-    else if(simData.savingRate > 0.3) afterGrade = "A등급";
+    let afterGrade = "부분 개선";
+    if(simData.savingRate > 0.5) afterGrade = "대폭 개선";
+    else if(simData.savingRate > 0.3) afterGrade = "상당 개선";
     document.getElementById('grade-after').innerText = afterGrade;
 
     const ctx = document.getElementById('roiLineChart').getContext('2d');

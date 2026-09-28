@@ -36,7 +36,7 @@ def search_building():
         return jsonify({"error": "주소를 입력해주세요."}), 400
         
     # 주소로 건물 검색 (부분 일치)
-    matched = df[df['대지위치'].str.contains(address, na=False, case=False)]
+    matched = df[df['대지위치'].str.contains(address, na=False, case=False, regex=False)]
     if matched.empty:
         return jsonify({"error": f"'{address}'에 해당하는 건물을 찾을 수 없습니다."}), 404
         
@@ -68,6 +68,13 @@ def search_building():
     
     predicted_elec_eui = max(0, predicted_elec_eui)
     predicted_gas_eui = max(0, predicted_gas_eui)
+
+    # 실측 가스 사용량이 0인 건물(가스 미사용, 전기 냉난방 등)은 가스 예측에서 제외
+    try:
+        if float(building['가스_연간사용량(MJ)']) == 0:
+            predicted_gas_eui = 0.0
+    except (KeyError, ValueError, TypeError):
+        pass
     
     area = float(building['연면적(㎡)'])
     pred_elec_kwh = predicted_elec_eui * area
