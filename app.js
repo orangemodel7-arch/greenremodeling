@@ -111,8 +111,10 @@ async function searchBuildingAndNext() {
         const bUsage = matchedRow[4];
         const bYear = parseInt(matchedRow[7]) || 30;
         const bArea = parseFloat(matchedRow[8]) || 84;
-        const bElec = parseFloat(matchedRow[9]) || (bArea * 50);
-        const bGas = parseFloat(matchedRow[10]) || (bArea * 300);
+        const elecRaw = parseFloat(matchedRow[9]);
+        const gasRaw  = parseFloat(matchedRow[10]);
+        const bElec = Number.isFinite(elecRaw) ? elecRaw : bArea * 50;
+        const bGas  = Number.isFinite(gasRaw)  ? gasRaw  : 0;
         
         let uiUsage = "상업용";
         if (bUsage.includes("주택")) uiUsage = "주거용";
@@ -124,7 +126,8 @@ async function searchBuildingAndNext() {
         document.getElementById('input-area').value = Math.round(bArea);
         
         document.getElementById('val-elec').innerText = Math.round(bElec).toLocaleString() + ' kWh';
-        document.getElementById('val-gas').innerText = Math.round(bGas).toLocaleString() + ' MJ';
+        document.getElementById('val-gas').innerText =
+            bGas > 0 ? Math.round(bGas).toLocaleString() + ' MJ' : '가스 미사용 (0 MJ)';
         
         simData.currentElecKwh = bElec;
         simData.currentGasMj = bGas;
@@ -322,8 +325,8 @@ function runEngines() {
     const totalInsulArea = insulArea + roofArea;
     const hvacCount = Math.max(1, Math.ceil(area / 120));
     
-    const currentElecKwh = simData.currentElecKwh || (area * 50); 
-    const currentGasMj = simData.currentGasMj || (area * 300);
+    const currentElecKwh = simData.currentElecKwh ?? (area * 50);
+    const currentGasMj   = simData.currentGasMj   ?? (area * 300);
     const elecCost = currentElecKwh * 150;
     const gasCost = currentGasMj * 20;
     const currentTotalCost = elecCost + gasCost;
