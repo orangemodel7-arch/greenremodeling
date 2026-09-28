@@ -68,60 +68,73 @@ let surveyAnswers = {};
 async function searchBuildingAndNext() {
     const address = document.getElementById('address-input').value;
     const statusText = document.getElementById('search-status');
-    statusText.innerText = "데이터 조회 및 EUI 예측 중...";
+    statusText.innerText = "실제 데이터셋 기반 조회 중...";
+    
+    if (!address) {
+        alert("주소를 입력해주세요.");
+        statusText.innerText = "공공 데이터 연동 대기 중...";
+        return;
+    }
     
     try {
-        const res = await fetch('/api/search?address=' + encodeURIComponent(address));
-        const data = await res.json();
+        // Flask 서버 없이 프론트엔드에서 직접 CSV(실제 데이터셋)를 로드하여 분석
+        const res = await fetch('model_data/gwangju_building_energy.csv');
+        if (!res.ok) throw new Error("CSV 데이터를 불러올 수 없습니다.");
+        const text = await res.text();
         
-        if (!res.ok) {
-            alert(data.error || "검색 실패");
+        const lines = text.split(/\r?\n/);
+        let matchedRow = null;
+        
+        // 주소의 공백을 제거하여 부분 일치율을 높임
+        const searchAddr = address.replace(/\s/g, '');
+        
+        // CSV 파싱 (헤더 건너뛰고 첫 번째 매칭되는 건물 탐색)
+        for (let i = 1; i < lines.length; i++) {
+            const row = lines[i].split(',');
+            if (row.length < 11) continue;
+            
+            const rowAddr = (row[2] || '').replace(/\s/g, '');
+            if (rowAddr.includes(searchAddr)) {
+                matchedRow = row;
+                break;
+            }
+        }
+        
+        if (!matchedRow) {
+            alert(`'${address}'에 해당하는 건물을 실제 데이터셋에서 찾을 수 없습니다.`);
             statusText.innerText = "공공 데이터 연동 대기 중...";
             return;
         }
         
-        // Update DOM
-        document.getElementById('val-address').innerText = data.address;
-        document.querySelector('#screen-status .badge').innerText = data.year + ' 년';
-        document.getElementById('input-usage').value = data.usage_ui;
-        document.getElementById('input-area').value = Math.round(data.area);
+        // 인덱스 -> 2: 대지위치, 4: 주용도, 7: 연식, 8: 연면적, 9: 전기(kWh), 10: 가스(MJ)
+        const bAddress = matchedRow[2];
+        const bUsage = matchedRow[4];
+        const bYear = parseInt(matchedRow[7]) || 30;
+        const bArea = parseFloat(matchedRow[8]) || 84;
+        const bElec = parseFloat(matchedRow[9]) || (bArea * 50);
+        const bGas = parseFloat(matchedRow[10]) || (bArea * 300);
         
-        document.getElementById('val-elec').innerText = Math.round(data.pred_elec_kwh).toLocaleString() + ' kWh';
-        document.getElementById('val-gas').innerText = Math.round(data.pred_gas_mj).toLocaleString() + ' MJ';
+        let uiUsage = "상업용";
+        if (bUsage.includes("주택")) uiUsage = "주거용";
+        else if (bUsage.includes("공장") || bUsage.includes("창고")) uiUsage = "산업용";
         
-        // Store
-        simData.currentElecKwh = data.pred_elec_kwh;
-        simData.currentGasMj = data.pred_gas_mj;
+        document.getElementById('val-address').innerText = bAddress;
+        document.querySelector('#screen-status .badge').innerText = bYear + ' 년';
+        document.getElementById('input-usage').value = uiUsage;
+        document.getElementById('input-area').value = Math.round(bArea);
+        
+        document.getElementById('val-elec').innerText = Math.round(bElec).toLocaleString() + ' kWh';
+        document.getElementById('val-gas').innerText = Math.round(bGas).toLocaleString() + ' MJ';
+        
+        simData.currentElecKwh = bElec;
+        simData.currentGasMj = bGas;
         
         statusText.innerText = "공공 데이터 연동 대기 중...";
         nextScreen('screen-status');
     } catch (e) {
-        console.error("Error in searchBuildingAndNext:", e);
-        
-        // 서버 연결 실패 시 임시(Dummy) 데이터로 진행하도록 폴백(Fallback) 구현
-        const dummyData = {
-            address: address || "임시 주소 (서버 연결 실패)",
-            year: 30,
-            usage_ui: "주거용",
-            area: 84,
-            pred_elec_kwh: 4200,
-            pred_gas_mj: 25200
-        };
-        
-        document.getElementById('val-address').innerText = dummyData.address;
-        document.querySelector('#screen-status .badge').innerText = dummyData.year + ' 년';
-        document.getElementById('input-usage').value = dummyData.usage_ui;
-        document.getElementById('input-area').value = Math.round(dummyData.area);
-        
-        document.getElementById('val-elec').innerText = Math.round(dummyData.pred_elec_kwh).toLocaleString() + ' kWh';
-        document.getElementById('val-gas').innerText = Math.round(dummyData.pred_gas_mj).toLocaleString() + ' MJ';
-        
-        simData.currentElecKwh = dummyData.pred_elec_kwh;
-        simData.currentGasMj = dummyData.pred_gas_mj;
-        
+        console.error("데이터셋 로드 에러:", e);
+        alert("실제 데이터셋(CSV)을 읽어오는 데 실패했습니다.");
         statusText.innerText = "공공 데이터 연동 대기 중...";
-        alert("Flask 서버가 꺼져 있어 임시(Dummy) 데이터로 분석을 진행합니다.");
-        nextScreen('screen-status');
     }
 }
 
@@ -131,7 +144,7 @@ let marker = null;
 
 function initMap() {
     if (!map) {
-        map = L.map('map').setView([35.1768, 126.9058], 14);
+        map = L.map('map').setView([35.1765, 126.8687], 14);
         L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
             attribution: '© Google Maps'
         }).addTo(map);
@@ -144,7 +157,7 @@ function initMap() {
             popupAnchor: [1, -34],
             shadowSize: [41, 41]
         });
-        marker = L.marker([35.1768, 126.9058], {icon: redIcon}).addTo(map);
+        marker = L.marker([35.1765, 126.8687], {icon: redIcon}).addTo(map);
         
         map.on('click', function(e) {
             marker.setLatLng(e.latlng);
