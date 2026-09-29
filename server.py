@@ -87,8 +87,17 @@ def search_building():
     elif "공장" in usage or "창고" in usage:
         ui_usage = "산업용"
         
+    # 건축물대장 지상층수 (없거나 0이면 None → 화면 기본값 유지)
+    floors = None
+    try:
+        if '지상층수' in building.index and pd.notna(building['지상층수']) and int(building['지상층수']) > 0:
+            floors = int(building['지상층수'])
+    except (ValueError, TypeError):
+        floors = None
+
     return jsonify({
         "address": str(building['대지위치']),
+        "floors": floors,
         "buildingName": str(building['건물명']) if pd.notna(building['건물명']) else "-",
         "usage_raw": usage,
         "usage_ui": ui_usage,

@@ -93,6 +93,8 @@ async function searchBuildingAndNext() {
         document.querySelector('#screen-status .badge').innerText = data.year + ' 년';
         document.getElementById('input-usage').value = data.usage_ui;
         document.getElementById('input-area').value = Math.round(data.area);
+        // 건축물대장 지상층수가 있으면 자동 입력 (사용자 수정 가능), 없으면 1층
+        document.getElementById('input-floors').value = (data.floors && data.floors > 0) ? data.floors : 1;
         
         const elecRaw = parseFloat(data.pred_elec_kwh);
         const gasRaw  = parseFloat(data.pred_gas_mj);
@@ -271,7 +273,7 @@ function runEngines() {
     // 1. Get Inputs
     const usage = document.getElementById('input-usage').value;
     const area = parseFloat(document.getElementById('input-area').value);
-    const floors = parseInt(document.getElementById('input-floors').value);
+    const floors = Math.max(1, parseInt(document.getElementById('input-floors').value) || 1);
 
     // 2. Geometry Engine
     const A = area / floors;
