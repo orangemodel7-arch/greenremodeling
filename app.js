@@ -105,9 +105,17 @@ async function searchBuildingAndNext() {
         document.getElementById('val-gas').innerText =
             bGas > 0 ? Math.round(bGas).toLocaleString() + ' MJ' : '가스 미사용 (0 MJ)';
         
+        // EUI (연면적당 연간 사용량) 표시
+        const euiEl = document.getElementById('val-eui');
+        if (euiEl && data.area > 0) {
+            euiEl.innerText = `전기 EUI ${Math.round(bElec / data.area).toLocaleString()} kWh/㎡·년` +
+                (bGas > 0 ? ` · 가스 EUI ${Math.round(bGas / data.area).toLocaleString()} MJ/㎡·년` : '');
+        }
+
         // Store
         simData.currentElecKwh = bElec;
         simData.currentGasMj = bGas;
+        simData.households = parseInt(data.households) || 0;
         
         statusText.innerText = "공공 데이터 연동 대기 중...";
         nextScreen('screen-status');
@@ -257,140 +265,85 @@ function handleSurveyNext() {
 
 // --- Global Data Store ---
 let simData = {
-    totalCost: 0,
-    annualSaving: 0,
-    payback: 0,
-    beforeCost: 0,
-    afterCost: 0,
-    savingRate: 0
+    currentElecKwh: null,
+    currentGasMj: null,
+    households: 0,
+    bldg: null,
+    energy: null,
+    pkg: null
 };
 
+let engineResult = null;
 let calculatedPackages = [];
 let selectedPackageIndex = 1;
 
-// --- Engine Logic ---
+const won = v => Math.round(v).toLocaleString() + ' 원';
+const man = v => Math.round(v / 10000).toLocaleString() + '만 원';
+const pct = v => (v * 100).toFixed(1) + '%';
+const yrs = v => isFinite(v) ? v.toFixed(1) + '년' : '회수 불가';
+
+function currentBankRate() {
+    const el = document.getElementById('input-bank-rate');
+    const v = el ? parseFloat(el.value) : NaN;
+    return Number.isFinite(v) && v >= 0 ? v / 100 : CONFIG.finance.defaultBankRate;
+}
+
+// --- Engine Logic (계산은 engine.js) ---
 function runEngines() {
-    // 1. Get Inputs
     const usage = document.getElementById('input-usage').value;
     const area = parseFloat(document.getElementById('input-area').value);
     const floors = Math.max(1, parseInt(document.getElementById('input-floors').value) || 1);
 
-    // 2. Geometry Engine
-    const A = area / floors;
-    let W = 0, insulArea = 0, windowArea = 0, roofArea = A;
-
-    if (usage === '주거용') {
-        W = 18 * Math.sqrt(A / 2) * floors;
-        insulArea = W * 0.15; // 핀포인트 북측 단열
-        windowArea = W * 0.30;
-    } else if (usage === '상업용') {
-        W = 16 * Math.sqrt(A) * floors;
-        insulArea = W * 0.40; // 내단열
-        windowArea = W * 0.60;
-    } else {
-        W = 24 * Math.sqrt(A) * floors;
-        insulArea = W * 0.90; // 내단열
-        windowArea = W * 0.10;
-    }
-
-    const windowCount = Math.ceil(windowArea / 3);
-    const totalInsulArea = insulArea + roofArea;
-    const hvacCount = Math.max(1, Math.ceil(area / 120));
-    
-    const currentElecKwh = simData.currentElecKwh ?? (area * 50);
-    const currentGasMj   = simData.currentGasMj   ?? (area * 300);
-    const elecCost = currentElecKwh * 150;
-    const gasCost = currentGasMj * 20;
-    const currentTotalCost = elecCost + gasCost;
-
-    const baseHvacPrice = (usage === '주거용') ? (850000 + 150000) : (2800000 + 450000);
-
-    // 3. AI Survey Recommendation Logic
-    let totalScore = Object.values(surveyAnswers).reduce((a, b) => a + b, 0);
-    let recommendedIdx = 1; // Default Smart
-    if (totalScore <= 10) recommendedIdx = 2; // Bad state -> Comprehensive
-    else if (totalScore >= 16) recommendedIdx = 0; // Good state -> Economy
-
-    // 4. Calculate 3 Packages independently
-    calculatedPackages = [
-        {
-            name: "실속형",
-            desc: "가성비 보완 시공 (최단기 회수)",
-            savingRate: 0.15,
-            costWindow: windowArea * 50000,
-            basisWindow: `기밀 보강 및 단열 필름: ${Math.round(windowArea)}㎡ × 50,000원`,
-            costInsul: (totalInsulArea * 0.2) * 40000,
-            basisInsul: `취약부 부분 단열: ${Math.round(totalInsulArea * 0.2)}㎡ × 40,000원`,
-            costHvac: 0,
-            basisHvac: `설비 교체 없음`,
-            isRecommended: recommendedIdx === 0
-        },
-        {
-            name: "스마트형",
-            desc: "정부지원 타겟 전면 교체 (표준)",
-            savingRate: 0.35,
-            costWindow: (windowArea * 280000) + (windowCount * 103673),
-            basisWindow: `고효율 이중창: ${Math.round(windowArea)}㎡ × 28만 + ${windowCount}개소 시공비`,
-            costInsul: totalInsulArea * 40016,
-            basisInsul: `전체 단열재 보강: ${Math.round(totalInsulArea)}㎡ × 40,016원`,
-            costHvac: hvacCount * baseHvacPrice,
-            basisHvac: `고효율 설비 교체: ${hvacCount}대 × ${baseHvacPrice.toLocaleString()}원`,
-            isRecommended: recommendedIdx === 1
-        },
-        {
-            name: "종합형",
-            desc: "프리미엄 제로에너지화 (자산가치 극대화)",
-            savingRate: 0.60,
-            costWindow: (windowArea * 500000) + (windowCount * 103673),
-            basisWindow: `방위 맞춤 삼중창: ${Math.round(windowArea)}㎡ × 50만 + ${windowCount}개소 시공비`,
-            costInsul: totalInsulArea * 80000,
-            basisInsul: `프리미엄 외단열: ${Math.round(totalInsulArea)}㎡ × 80,000원`,
-            costHvac: (hvacCount * baseHvacPrice) + 5000000,
-            basisHvac: `고효율 설비 + 환기/태양광: 설비 + 5,000,000원 추가`,
-            isRecommended: recommendedIdx === 2
-        }
-    ];
-
-    // Calc totals and payback for each
-    calculatedPackages.forEach(pkg => {
-        pkg.totalCost = pkg.costWindow + pkg.costInsul + pkg.costHvac;
-        pkg.annualSaving = currentTotalCost * pkg.savingRate;
-        const r = 0.02; // 2% discount rate for payback
-        if (pkg.totalCost * r < pkg.annualSaving) {
-            pkg.payback = -Math.log(1 - (pkg.totalCost * r) / pkg.annualSaving) / Math.log(1 + r);
-        } else {
-            pkg.payback = 999;
-        }
-    });
-
+    const bldg = {
+        usage, area, floors,
+        households: simData.households || 0,
+        elecKwh: simData.currentElecKwh ?? area * 50,
+        gasMj: simData.currentGasMj ?? 0
+    };
+    engineResult = runEngine(bldg, surveyAnswers, currentBankRate());
+    simData.bldg = bldg;
+    simData.energy = engineResult.energy;
+    calculatedPackages = engineResult.packages;
     renderPackageCards();
+}
+
+function supportBadge(fin) {
+    if (!fin.eligible) return '<span class="badge gray" style="font-size:11px;">이자지원 미대상 (20% 미만)</span>';
+    return `<span class="badge green" style="font-size:11px;">이자지원 ${(fin.support * 100).toFixed(1)}%p${fin.bonus ? ' (30%↑ 추가)' : ''}</span>`;
 }
 
 function renderPackageCards() {
     const container = document.getElementById('packages-container');
     if (!container) return;
-    
-    let html = '';
+
+    const d = engineResult.parts;
+    const partLine = [d.window, d.wall, d.solar, d.equip]
+        .map(p => `${p.name} ${p.weak ? '<b style="color:#d84c4c;">취약</b>' : '양호'}`).join(' · ');
+    const heatType = engineResult.energy.gasHeated ? '가스 난방 건물' : '전기 냉난방 건물';
+
+    let html = `<div style="font-size:12px; color:#666; line-height:1.6; margin-bottom:4px;">
+        설문 진단: ${partLine}<br>에너지 특성: ${heatType}</div>`;
+    if (!engineResult.recommended) {
+        html += `<div style="font-size:12px; color:#d84c4c; margin-bottom:4px;">현재 에너지 사용량에 비해 공사비가 커서 ${CONFIG.maxPaybackYears}년 안에 회수되는 패키지가 없습니다. 부분 보강을 검토하거나 그린리모델링 컨설팅 지원사업(무상 현장진단)을 신청해 보세요.</div>`;
+    }
+
     calculatedPackages.forEach((pkg, idx) => {
-        const paybackText = pkg.payback > 100 ? '회수 불가' : (pkg.payback.toFixed(1) + '년');
         const borderStyle = pkg.isRecommended ? 'border: 2px solid #1a4d41;' : 'border: 1px solid #ddd;';
-        
+        const monthlySave = pkg.annualSaving / 12;
         html += `
         <div class="data-card" style="cursor:pointer; position:relative; ${borderStyle} transition: all 0.2s;" onclick="selectPackage(${idx})">
-            ${pkg.isRecommended ? '<div class="badge green" style="position:absolute; top:-10px; right:15px; z-index:10; font-size:11px; padding:4px 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">AI 추천✨</div>' : ''}
-            <h3 style="margin:0 0 5px 0; color:#1a4d41; font-size:18px;">${pkg.name}</h3>
-            <p style="font-size:12px; color:#666; margin:0 0 15px 0;">${pkg.desc}</p>
-            <div style="display:flex; justify-content:space-between; font-size:14px; margin-bottom:8px;">
-                <span>총 예상 공사비</span><strong style="color:#1a4d41;">${Math.round(pkg.totalCost / 10000).toLocaleString()}만 원</strong>
+            ${pkg.isRecommended ? `<div class="badge green" style="position:absolute; top:-10px; right:15px; z-index:10; font-size:11px; padding:4px 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">AI 추천✨ ${pkg.recommendReason}</div>` : ''}
+            <h3 style="margin:0 0 3px 0; color:#1a4d41; font-size:18px;">${pkg.name} <span style="font-size:12px; color:#888; font-weight:400;">${pkg.scope}</span></h3>
+            <p style="font-size:12px; color:#666; margin:0 0 4px 0;">${pkg.desc}${pkg.target ? ` · 진단 대상: ${pkg.target}` : ''}</p>
+            <p style="font-size:11px; color:#999; margin:0 0 10px 0;">근거: ${pkg.evidence.map(e => e.src).join(', ')}</p>
+            <div class="data-row" style="padding:6px 0;"><span>총 예상 공사비</span><strong style="color:#1a4d41;">${man(pkg.totalCost)}</strong></div>
+            <div class="data-row" style="padding:6px 0;"><span>연간 절감액 (절감률)</span><strong>${man(pkg.annualSaving)} (${pct(pkg.primarySavingRate)})</strong></div>
+            <div class="data-row" style="padding:6px 0;"><span>월 절감액 vs 월 상환액</span><strong>${man(monthlySave)} / ${man(pkg.finance.monthlyPayment)}</strong></div>
+            <div class="data-row" style="padding:6px 0;"><span>정부 지원</span>${supportBadge(pkg.finance)}</div>
+            <div style="display:flex; justify-content:space-between; font-size:14px; color:#f39c12; font-weight:bold; margin-top:6px;">
+                <span>투자 회수 기간</span><span>${yrs(pkg.payback)}</span>
             </div>
-            <div style="display:flex; justify-content:space-between; font-size:14px; margin-bottom:8px;">
-                <span>연간 절감액</span><strong>${Math.round(pkg.annualSaving / 10000).toLocaleString()}만 원</strong>
-            </div>
-            <div style="display:flex; justify-content:space-between; font-size:14px; color:#f39c12; font-weight:bold;">
-                <span>투자 회수 기간</span><span>${paybackText}</span>
-            </div>
-        </div>
-        `;
+        </div>`;
     });
     container.innerHTML = html;
 }
@@ -398,29 +351,19 @@ function renderPackageCards() {
 function selectPackage(idx) {
     selectedPackageIndex = idx;
     const pkg = calculatedPackages[idx];
-    
-    // Apply selected package to simData for downstream charts
-    const currentElecKwh = simData.currentElecKwh || 0; 
-    const currentGasMj = simData.currentGasMj || 0;
-    const currentTotalCost = (currentElecKwh * 150) + (currentGasMj * 20);
+    simData.pkg = pkg;
 
-    simData.beforeCost = currentTotalCost;
-    simData.afterCost = currentTotalCost - pkg.annualSaving;
-    simData.annualSaving = pkg.annualSaving;
-    simData.totalCost = pkg.totalCost;
-    simData.savingRate = pkg.savingRate;
-    simData.payback = pkg.payback;
+    document.getElementById('package-name').innerText = `${pkg.name} 리모델링 패키지 (${pkg.scope})`;
+    document.getElementById('cost-window').innerText = won(pkg.costs.window);
+    document.getElementById('cost-insul').innerText = won(pkg.costs.insul);
+    document.getElementById('cost-hvac').innerText = won(pkg.costs.hvac);
+    document.getElementById('cost-total').innerText = won(pkg.totalCost);
+    document.getElementById('label-insul').innerText = simData.bldg.usage === '주거용' ? '단열 보강 (북측 외벽·옥상)' : '단열 보강 (외벽·옥상)';
+    document.getElementById('label-hvac').innerText = simData.bldg.usage === '주거용' ? '설비 교체 (콘덴싱 보일러)' : '설비 교체 (인버터 EHP)';
 
-    // Update Screen 5 DOM (Cost details)
-    document.getElementById('package-name').innerText = `${pkg.name} 리모델링 패키지`;
-    document.getElementById('cost-window').innerText = Math.round(pkg.costWindow).toLocaleString() + ' 원';
-    document.getElementById('cost-insul').innerText = Math.round(pkg.costInsul).toLocaleString() + ' 원';
-    document.getElementById('cost-hvac').innerText = Math.round(pkg.costHvac).toLocaleString() + ' 원';
-    document.getElementById('cost-total').innerText = Math.round(pkg.totalCost).toLocaleString() + ' 원';
-    
-    document.getElementById('basis-window').innerText = pkg.basisWindow;
-    document.getElementById('basis-insul').innerText = pkg.basisInsul;
-    document.getElementById('basis-hvac').innerText = pkg.basisHvac;
+    document.getElementById('basis-window').innerText = pkg.basis.window;
+    document.getElementById('basis-insul').innerText = pkg.basis.insul;
+    document.getElementById('basis-hvac').innerText = pkg.basis.hvac;
 
     nextScreen('screen-cost');
 }
@@ -429,122 +372,92 @@ function selectPackage(idx) {
 let eChart, rChart;
 
 function renderEnergyChart() {
-    document.getElementById('banner-saving-text').innerText = `연간 약 ${Math.round(simData.annualSaving / 10000).toLocaleString()}만 원 절감!`;
-    document.getElementById('stat-saving-rate').innerText = (simData.savingRate * 100).toFixed(1) + '%';
-    document.getElementById('stat-saving-amount').innerText = Math.round(simData.annualSaving).toLocaleString() + ' 원';
+    const pkg = simData.pkg;
+    document.getElementById('banner-saving-text').innerText = `연간 약 ${Math.round(pkg.annualSaving / 10000).toLocaleString()}만 원 절감!`;
+    document.getElementById('stat-saving-rate').innerText = pct(pkg.primarySavingRate);
+    document.getElementById('stat-saving-amount').innerText = won(pkg.annualSaving);
+
+    const r = pkg.rates;
+    const rateTxt = [`난방 ${pct(r.heat)}`, `냉방 ${pct(r.cool)}`, `기타 ${pct(r.base)}`].join(' · ');
+    document.getElementById('saving-breakdown').innerText =
+        `적용 절감률(학술 상수 × 설문 보정): ${rateTxt}\n근거: ${pkg.evidence.map(e => e.label + ' — ' + e.src).join(' / ')}`;
 
     const ctx = document.getElementById('energyLineChart').getContext('2d');
-    if(eChart) eChart.destroy();
+    if (eChart) eChart.destroy();
 
-    // 월별 계절 패턴(냉난방 부하 비율)에 연간 예상 에너지 비용을 배분 (단위: 만 원)
     const months = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
-    const seasonal = [150, 130, 100, 80, 90, 140, 200, 210, 120, 90, 110, 160];
-    const seasonalSum = seasonal.reduce((a, b) => a + b, 0);
-    const curveBefore = seasonal.map(w => Math.round((simData.beforeCost * w / seasonalSum) / 10000 * 10) / 10);
-    const curveAfter = curveBefore.map(v => Math.round(v * (1 - simData.savingRate) * 10) / 10);
+    const curves = monthlyCurves(simData.bldg, simData.energy, pkg.rates);
 
     eChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: months,
             datasets: [
-                {
-                    label: '현재 예상 요금 (만 원)',
-                    data: curveBefore,
-                    borderColor: '#a0d6c9',
-                    borderWidth: 2,
-                    tension: 0.4,
-                    fill: false
-                },
-                {
-                    label: '리모델링 후 (만 원)',
-                    data: curveAfter,
-                    borderColor: '#1a4d41',
-                    borderWidth: 3,
-                    tension: 0.4,
-                    fill: true,
-                    backgroundColor: 'rgba(26, 77, 65, 0.1)'
-                }
+                { label: '현재 예상 요금 (만 원)', data: curves.before, borderColor: '#a0d6c9', borderWidth: 2, tension: 0.4, fill: false },
+                { label: '리모델링 후 (만 원)', data: curves.after, borderColor: '#1a4d41', borderWidth: 3, tension: 0.4, fill: true, backgroundColor: 'rgba(26, 77, 65, 0.1)' }
             ]
         },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { position: 'top' } },
-            scales: { y: { beginAtZero: true } }
-        }
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' } }, scales: { y: { beginAtZero: true } } }
     });
 }
 
 function renderRoiChart() {
-    // 2% 현금흐름법 투자회수기간 산출
-    const r = 0.02;
-    let C = simData.totalCost;
-    let S = simData.annualSaving;
-    
-    if (C * r < S) {
-        simData.payback = -Math.log(1 - (C * r) / S) / Math.log(1 + r);
-    } else {
-        simData.payback = 999;
-    }
+    const pkg = simData.pkg;
+    const fin = pkg.finance;
 
-    document.getElementById('roi-cost').innerText = Math.round(simData.totalCost).toLocaleString() + ' 원';
-    document.getElementById('roi-saving').innerText = Math.round(simData.annualSaving).toLocaleString() + ' 원';
-    document.getElementById('roi-payback').innerText = simData.payback > 100 ? '회수 불가' : (simData.payback.toFixed(1) + ' 년');
-    
-    // Details
-    document.getElementById('detail-eui').innerText = (simData.savingRate * 100).toFixed(1) + ' %';
-    // 절감 에너지량 × 배출계수 (전력 0.4781 kgCO₂/kWh, 도시가스(LNG) 0.0561 kgCO₂/MJ)
-    const savedElecKwh = (simData.currentElecKwh || 0) * simData.savingRate;
-    const savedGasMj = (simData.currentGasMj || 0) * simData.savingRate;
-    const co2 = savedElecKwh * 0.4781 + savedGasMj * 0.0561;
-    document.getElementById('detail-co2').innerText = Math.round(co2).toLocaleString() + ' kgCO₂';
-    
-    let afterGrade = "부분 개선";
-    if(simData.savingRate > 0.5) afterGrade = "대폭 개선";
-    else if(simData.savingRate > 0.3) afterGrade = "상당 개선";
+    document.getElementById('roi-cost').innerText = won(pkg.totalCost);
+    document.getElementById('roi-saving').innerText = won(pkg.annualSaving);
+    document.getElementById('roi-payback').innerText = isFinite(pkg.payback) ? pkg.payback.toFixed(1) + ' 년' : '회수 불가';
+
+    // 금융(이자지원) 상세
+    const finRows = [
+        ['대출 원금 (한도 내)', won(fin.loan) + (fin.equity > 0 ? ` · 자기자금 ${man(fin.equity)}` : '')],
+        ['은행 약정금리', pct(fin.bankRate)],
+        ['정부 이자지원율', fin.eligible ? `${(fin.support * 100).toFixed(1)}%p` : '미대상 (성능개선 20% 미만)'],
+        ['건축주 실부담 금리', pct(fin.userRate)],
+        [`월 상환액 (${fin.months}개월 원리금균등)`, `${won(fin.monthlyPayment)}`],
+        ['└ 이자지원 없을 때', won(fin.monthlyNoSupport)],
+        ['월 절감액', won(pkg.annualSaving / 12)],
+        ['정부 이자지원 총액 (D)', won(fin.govSupport)],
+        ['건축주 부담 이자 총액', won(fin.userInterest)],
+        ['건축주 총부담 (공사비+부담이자)', won(pkg.ownerTotal)]
+    ];
+    document.getElementById('finance-rows').innerHTML =
+        finRows.map(([k, v]) => `<div class="data-row"><span>${k}</span><span>${v}</span></div>`).join('');
+    const net = pkg.annualSaving / 12 - fin.monthlyPayment;
+    document.getElementById('finance-summary').innerText = net >= 0
+        ? `상환 기간 동안 매달 약 ${man(net)}의 여유가 생깁니다 (월 절감액 > 월 상환액).`
+        : `상환 기간 동안 매달 약 ${man(-net)}을 추가로 부담합니다 (월 절감액 < 월 상환액).`;
+
+    // 성능 및 환경 가치
+    document.getElementById('detail-eui').innerText = pct(pkg.primarySavingRate);
+    document.getElementById('detail-co2').innerText = Math.round(pkg.co2Kg).toLocaleString() + ' kgCO₂';
+    let afterGrade = '부분 개선';
+    if (pkg.primarySavingRate >= 0.30) afterGrade = '대폭 개선';
+    else if (pkg.primarySavingRate >= 0.20) afterGrade = '상당 개선';
     document.getElementById('grade-after').innerText = afterGrade;
 
+    // 누적 할인 절감액 vs 건축주 총부담
     const ctx = document.getElementById('roiLineChart').getContext('2d');
-    if(rChart) rChart.destroy();
-
-    const years = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    const costLine = years.map(() => simData.totalCost);
+    if (rChart) rChart.destroy();
+    const horizon = Math.max(10, Math.min(30, isFinite(pkg.payback) ? Math.ceil(pkg.payback) + 2 : 10));
+    const years = Array.from({ length: horizon + 1 }, (_, i) => i);
+    const costLine = years.map(() => Math.round(pkg.ownerTotal));
     const savingLine = years.map(y => {
-        let cumSaving = 0;
-        for(let i=1; i<=y; i++) {
-            cumSaving += simData.annualSaving / Math.pow(1 + 0.02, i);
-        }
-        return Math.round(cumSaving);
+        let cum = 0;
+        for (let i = 1; i <= y; i++) cum += pkg.annualSaving / Math.pow(1 + CONFIG.discountRate, i);
+        return Math.round(cum);
     });
 
     rChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: years.map(y => y+'년'),
+            labels: years.map(y => y + '년'),
             datasets: [
-                {
-                    label: '누적 절감액',
-                    data: savingLine,
-                    borderColor: '#1a4d41',
-                    borderWidth: 3,
-                    tension: 0,
-                    fill: true,
-                    backgroundColor: 'rgba(26, 77, 65, 0.1)'
-                },
-                {
-                    label: '총 투자 비용',
-                    data: costLine,
-                    borderColor: '#a0d6c9',
-                    borderWidth: 2,
-                    borderDash: [5, 5],
-                    tension: 0,
-                    fill: false
-                }
+                { label: '누적 절감액 (할인율 2%)', data: savingLine, borderColor: '#1a4d41', borderWidth: 3, tension: 0, fill: true, backgroundColor: 'rgba(26, 77, 65, 0.1)' },
+                { label: '건축주 총부담', data: costLine, borderColor: '#a0d6c9', borderWidth: 2, borderDash: [5, 5], tension: 0, fill: false }
             ]
         },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { position: 'top' } }
-        }
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' } } }
     });
 }

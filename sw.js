@@ -1,9 +1,10 @@
-const CACHE_NAME = 'green-app-v5';
+const CACHE_NAME = 'green-app-v6';
 const urlsToCache = [
   '/',
   '/index.html',
   '/style.css',
   '/app.js',
+  '/engine.js',
   '/manifest.json'
 ];
 

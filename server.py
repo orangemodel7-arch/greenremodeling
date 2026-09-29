@@ -102,6 +102,7 @@ def search_building():
         "usage_raw": usage,
         "usage_ui": ui_usage,
         "year": int(building['연식']),
+        "households": int(building['세대수']) if pd.notna(building['세대수']) else 0,
         "area": area,
         "pred_elec_kwh": pred_elec_kwh,
         "pred_gas_mj": pred_gas_mj
