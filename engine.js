@@ -4,41 +4,34 @@
  * 화면(app.js)과 분리된 순수 계산 모듈. 모든 가정값은 CONFIG 한 곳에 모음.
  *
  * [계산 흐름]
- *  A. 현재 에너지 : 예측 전력(kWh)·가스(MJ)를 난방/냉방/기타로 분해 → 용도별 단가로 비용 산출
- *  B. 절감 효과   : 패키지별 "용도별 절감률"(학술 절감 상수 × 설문 상태보정) 적용
- *  C. 공사비      : 기하학 물량 × 공사비 DB(자재비 + 표준시장단가 노무비)
- *  D. 금융        : 대출(한도 내) + 정부 이자지원(성능개선 20%↑ 대상, 30%↑ +1%p)
- *                   → 월 상환액, 정부 이자지원 총액, 건축주 부담 이자
- *  F. 회수기간    : 할인율 2% DCF, 건축주 총부담(C + 부담이자)을 절감액으로 회수하는 시점
+ *  1. 설문 진단 : 6문항 → 3개 공종(창호·단열·설비) 취약도 점수 → 취약 순위
+ *  2. 패키지 구성: 실속형 = 1순위 공종 / 스마트형 = 1·2순위 / 종합형 = 3개 전부
+ *                 (단가는 모든 패키지가 같은 공사비 DB를 쓰고, 담는 공종만 다름)
+ *  3. 현재 에너지: 예측 전력(kWh)·가스(MJ)를 난방/냉방/기타로 분해 → 용도별 단가로 비용 산출
+ *  4. 절감 효과  : 담긴 공종 조합에 맞는 학술 절감 상수 × 설문 상태보정
+ *  5. 공사비     : 기하학 물량 × 공사비 DB(자재비 + 표준시장단가 노무비)
+ *  6. 금융       : 대출(한도 내) + 정부 이자지원(성능개선 20%↑ 대상, 30%↑ +1%p)
+ *  7. 회수기간   : 할인율 2% DCF, 건축주 총부담(C + 부담이자)을 절감액으로 회수하는 시점
+ *  8. AI 추천    : 기대수명 20년 동안의 순이익(NPV)이 가장 큰 패키지
  *
- * [학술 절감 상수 → 3개 패키지 매핑]  (포함관계: 실속 ⊂ 스마트 ⊂ 종합)
- *  실속형 = 설문상 취약한 외피 공종 1개
- *           · 창호 교체  → S1 가스(난방) 11%   (임서진·조경주, 2026)
- *           · 단열 보강  → S3 난방 33%         (유영서 외, 2025)
- *  스마트형 = 외피 전면(단열 + 방위별 맞춤 고효율 창호)
- *           · 난방 → S4 난방 67.5%             (전지수 외, 2026: 단열+창호 최고등급)
- *           · 냉방 → S2 18.9%                  (허태식, 2026: 방위별 창호 최적화)
- *             ※ S2는 일사 차폐가 핵심이므로 S4와 중복되지 않도록 냉방에만 적용
- *  종합형 = 외피 전면 + 고효율 설비(EHP/콘덴싱 보일러)
- *           · 전체 → S5 전체 40%               (칸(KHARN), 2025)
- *           · 단, 종합형은 스마트형 공사를 모두 포함하므로
- *             용도별로 max(S5, 스마트형 절감률)을 적용(포함관계 보정)
- *  ※ 상수는 논문이 측정한 에너지 범위(난방/냉방/전체)에만 적용한다.
+ * [공종 조합 → 절감 상수]
+ *  창호만        : 난방 S1 11% + 냉방 S2 18.9%     (임서진·조경주 2026 / 허태식 2026)
+ *  단열만        : 난방 S3 33%                     (유영서 외 2025)
+ *  창호 + 단열   : 난방 S4 67.5% + 냉방 S2 18.9%   (전지수 외 2026 / 허태식 2026)
+ *  설비          : 기존 → 1등급 효율 개선분 (1 - 기존효율/신규효율), 기존 효율은 Q6 연식으로 추정
+ *  여러 공종     : 용도별 잔여율을 곱해 결합  1 - (1-외피)(1-설비)  → 중복 계산 방지
+ *  3개 공종 전부 : 위 결합값과 S5 전체 40%(칸 KHARN 2025) 중 큰 값
  * ===================================================================== */
 
 const CONFIG = {
     // --- 에너지 요금 단가 (가정값: 발표 전 최신 요금표로 확인·교체) ---
     tariff: {
-        // 비주거 전기: 용도별 평균 단가(원/kWh) — 한전 전력통계(EPSIS) 용도별 판매단가로 교체 권장
-        elecFlat: { '상업용': 175, '산업용': 180 },
-        // 주거 전기: 주택용 저압 누진 3단계 전력량요금(기타계절, 원/kWh) — 세대당 월평균 사용량에 적용
-        elecResTiers: [ { upTo: 200, price: 120.0 }, { upTo: 400, price: 214.6 }, { upTo: Infinity, price: 307.3 } ],
-        // 도시가스(원/MJ): 주거=주택난방용, 상업=업무난방용, 산업=산업용 — 광주 도시가스 요금표로 교체 권장
-        gas: { '주거용': 22.0, '상업용': 23.0, '산업용': 21.0 }
+        elecFlat: { '상업용': 175, '산업용': 180 },          // 비주거 전기 평균 단가(원/kWh)
+        elecResTiers: [ { upTo: 200, price: 120.0 }, { upTo: 400, price: 214.6 }, { upTo: Infinity, price: 307.3 } ], // 주택용 누진
+        gas: { '주거용': 22.0, '상업용': 23.0, '산업용': 21.0 } // 주택난방용 / 업무난방용 / 산업용 (원/MJ)
     },
 
-    // --- 전기 사용량의 용도 구성비 (가정값: 에너지총조사 등으로 교체 권장) ---
-    //  가스 난방 건물은 전기 난방분 0으로 처리 (난방은 가스가 담당)
+    // --- 전기 사용량의 용도 구성비 (가정값) — 가스 난방 건물은 전기 난방분 0 ---
     elecEndUse: {
         '주거용': { heat: 0.15, cool: 0.10 },
         '상업용': { heat: 0.20, cool: 0.20 },
@@ -46,32 +39,36 @@ const CONFIG = {
     },
     gasHeatedThreshold: 0.30,   // 최종에너지 중 가스 비중 30% 이상이면 '가스 난방 건물'
 
-    // --- 1차에너지 환산계수 (건축물의 에너지절약설계기준) ---
-    primaryFactor: { elec: 2.75, gas: 1.1 },
-    // --- 온실가스 배출계수 ---
-    co2: { elecKgPerKwh: 0.4781, gasKgPerMj: 0.0561 },
+    primaryFactor: { elec: 2.75, gas: 1.1 },            // 1차에너지 환산계수 (에너지절약설계기준)
+    co2: { elecKgPerKwh: 0.4781, gasKgPerMj: 0.0561 },  // 온실가스 배출계수
 
     // --- 학술 절감 상수 ---
     evidence: {
-        S1: { rate: 0.11,  scope: 'heat',  label: '고효율 창호 교체 · 가스(난방) 11%', src: '임서진·조경주(2026)' },
-        S2: { rate: 0.189, scope: 'cool',  label: '방위별 맞춤 창호 · 18.9% (냉방에 적용)', src: '허태식(2026)' },
-        S3: { rate: 0.33,  scope: 'heat',  label: '외벽·내벽 단열 보강 · 난방 33%', src: '유영서 외(2025)' },
-        S4: { rate: 0.675, scope: 'heat',  label: '단열+창호 최고등급 · 난방 67.5%', src: '전지수 외(2026)' },
-        S5: { rate: 0.40,  scope: 'all',   label: '창호+단열+설비 · 전체 40%', src: '칸(KHARN)(2025)' }
+        S1: { rate: 0.11,  label: '고효율 창호 · 가스(난방) 11%', src: '임서진·조경주(2026)' },
+        S2: { rate: 0.189, label: '방위별 맞춤 창호 · 18.9% (냉방에 적용)', src: '허태식(2026)' },
+        S3: { rate: 0.33,  label: '단열 보강 · 난방 33%', src: '유영서 외(2025)' },
+        S4: { rate: 0.675, label: '단열+창호 · 난방 67.5%', src: '전지수 외(2026)' },
+        S5: { rate: 0.40,  label: '창호+단열+설비 · 전체 40%', src: '칸(KHARN)(2025)' }
     },
 
-    // --- 설문 상태보정: 논문 실증 대상은 노후 부위 → 이미 양호한 부위는 효과를 감쇄 (가정값) ---
-    //  부위 평균점수 s(1=불량 ~ 3=양호) → 보정계수 f = 1 - 0.15 × (s - 1)  (1.00 ~ 0.70)
+    // --- 설비 효율 (신규 = 공사비 DB 1등급 기준, 기존 = Q6 연식 점수별 가정값) ---
+    equipment: {
+        newCop: 4.2, newBoilerEff: 0.92,
+        oldByScore: { 1: { cop: 2.5, eff: 0.80 }, 2: { cop: 3.2, eff: 0.85 }, 3: { cop: 4.0, eff: 0.90 } }
+    },
+
+    // --- 설문 상태보정: 논문 실증 대상은 노후 부위 → 이미 양호한 공종은 효과를 감쇄 (가정값) ---
+    //  공종 평균점수 s(1=불량 ~ 3=양호) → f = 1 - 0.15 × (s - 1)  (1.00 ~ 0.70)
     conditionSlope: 0.15,
 
-    // --- 공사비 DB (제안서 표와 동일) ---
+    // --- 공사비 DB (제안서 표와 동일, 모든 패키지 공통) ---
     cost: {
         windowPerM2: 280000,          // PVC 이중창 자재비 (나라장터 관급자재)
         windowPerUnit: 103673,        // 창호 설치 노무비 /개소 (표준시장단가)
         m2PerWindowUnit: 3,           // 1개소 = 약 3㎡ (가정)
         insulPerM2: 25000 + 15016,    // PF보드 100T 자재비 + 노무비
-        hvacRes: 850000 + 150000,     // 1등급 콘덴싱 보일러 /대
-        hvacCom: 2800000 + 450000,    // 1등급 멀티 인버터 EHP /대
+        boiler: 850000 + 150000,      // 1등급 콘덴싱 보일러 /대 (가스 난방 건물)
+        ehp: 2800000 + 450000,        // 1등급 멀티 인버터 EHP /대 (전기 냉난방 건물)
         m2PerHvacUnit: 120            // 설비 1대당 담당 면적 (가정)
     },
 
@@ -87,7 +84,7 @@ const CONFIG = {
     },
 
     discountRate: 0.02,
-    maxPaybackYears: 20,          // 추천 기준: 창호·설비 기대수명 내 회수 (가정)
+    maxPaybackYears: 20,          // 추천 기준 기간: 창호·설비 기대수명 (가정)
 
     // 월별 배분 가중치 (난방도일·냉방도일 패턴 가정)
     monthly: {
@@ -96,43 +93,40 @@ const CONFIG = {
     }
 };
 
+const TRADE_NAMES = { window: '창호', insul: '단열', hvac: '설비' };
+
 /* ---------------- 유틸 ---------------- */
-function conditionFactor(avgScore) {
-    return 1 - CONFIG.conditionSlope * (avgScore - 1);
-}
-function avg(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
+const conditionFactor = s => 1 - CONFIG.conditionSlope * (s - 1);
+const avg = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+const combine = (...rates) => 1 - rates.reduce((rem, r) => rem * (1 - r), 1);   // 잔여율 곱으로 결합
 
-/* ---------------- 설문 → 부위별 상태 ---------------- */
-// answers: { q1..q6 : 1~3 } (응답 없으면 2=보통으로 간주)
-function diagnoseParts(answers) {
+/* ---------------- 1. 설문 → 공종별 취약도 ---------------- */
+// answers: { q1..q6 : 1~3 } (응답 없으면 2=보통)
+//  창호 = Q1 창호 재질 + Q3 외풍(기밀) / 단열 = Q2 결로·곰팡이 + Q4 옥상·외벽 차열 / 설비 = Q5 난방 성능 + Q6 설비 연식
+function diagnoseTrades(answers) {
     const s = k => (answers && answers[k]) ? answers[k] : 2;
-    const parts = {
-        window: { name: '창호·기밀', score: avg([s('q1'), s('q3')]) },
-        wall:   { name: '벽체 단열', score: s('q2') },
-        solar:  { name: '일사·차열', score: s('q4') },
-        equip:  { name: '냉난방 설비', score: avg([s('q5'), s('q6')]) }
+    const t = {
+        window: { key: 'window', name: '창호', questions: 'Q1·Q3', score: avg([s('q1'), s('q3')]) },
+        insul:  { key: 'insul',  name: '단열', questions: 'Q2·Q4', score: avg([s('q2'), s('q4')]) },
+        hvac:   { key: 'hvac',   name: '설비', questions: 'Q5·Q6', score: avg([s('q5'), s('q6')]), ageScore: s('q6') }
     };
-    Object.values(parts).forEach(p => { p.f = conditionFactor(p.score); p.weak = p.score <= 2; });
-    parts.equip.veryOld = s('q6') === 1;   // 설비 15년 이상
-    return parts;
+    Object.values(t).forEach(x => { x.f = conditionFactor(x.score); });
+    return t;
 }
 
-/* ---------------- A. 현재 에너지 분해 & 비용 ---------------- */
+/* ---------------- 3. 현재 에너지 분해 & 비용 ---------------- */
 function resElecCost(annualKwh, households) {
     const hh = Math.max(1, households || 1);
     let monthly = annualKwh / 12 / hh, cost = 0, prev = 0;
     for (const t of CONFIG.tariff.elecResTiers) {
-        const q = Math.max(0, Math.min(monthly, t.upTo) - prev);
-        cost += q * t.price;
+        cost += Math.max(0, Math.min(monthly, t.upTo) - prev) * t.price;
         prev = t.upTo;
         if (monthly <= t.upTo) break;
     }
     return cost * 12 * hh;
 }
-function elecCost(kwh, usage, households) {
-    return usage === '주거용' ? resElecCost(kwh, households) : kwh * CONFIG.tariff.elecFlat[usage];
-}
-function gasCost(mj, usage) { return mj * CONFIG.tariff.gas[usage]; }
+const elecCost = (kwh, usage, hh) => usage === '주거용' ? resElecCost(kwh, hh) : kwh * CONFIG.tariff.elecFlat[usage];
+const gasCost = (mj, usage) => mj * CONFIG.tariff.gas[usage];
 
 function decomposeEnergy(elecKwh, gasMj, usage) {
     const gasKwh = gasMj / 3.6;
@@ -148,28 +142,48 @@ function decomposeEnergy(elecKwh, gasMj, usage) {
     };
 }
 
-/* ---------------- B. 패키지 절감률 ---------------- */
-function packageRates(parts) {
-    const E = CONFIG.evidence;
-    const fEnv = avg([parts.window.f, parts.wall.f]);
-    const fAll = avg([parts.window.f, parts.wall.f, parts.solar.f, parts.equip.f]);
+/* ---------------- 4. 공종 조합 → 용도별 절감률 ---------------- */
+// 반환: { heatElec, heatGas, cool, base, evidence[] }
+function comboRates(set, trades, energy) {
+    const E = CONFIG.evidence, Q = CONFIG.equipment;
+    const hasW = set.includes('window'), hasI = set.includes('insul'), hasH = set.includes('hvac');
+    const ev = [];
 
-    const smart = { heat: E.S4.rate * fEnv, cool: E.S2.rate * parts.solar.f, base: 0 };
-    const s5 = E.S5.rate * fAll;
-    return {
-        econWindow: { heat: E.S1.rate * parts.window.f, cool: 0, base: 0 },
-        econWall:   { heat: E.S3.rate * parts.wall.f,   cool: 0, base: 0 },
-        smart,
-        // 포함관계 보정: 종합형 ≥ 스마트형 (용도별 max)
-        total: { heat: Math.max(s5, smart.heat), cool: Math.max(s5, smart.cool), base: s5 }
+    // 외피(창호·단열) 난방 절감
+    let envHeat = 0;
+    if (hasW && hasI) { envHeat = E.S4.rate * avg([trades.window.f, trades.insul.f]); ev.push(E.S4); }
+    else if (hasW)    { envHeat = E.S1.rate * trades.window.f; ev.push(E.S1); }
+    else if (hasI)    { envHeat = E.S3.rate * trades.insul.f; ev.push(E.S3); }
+    // 창호의 일사 차폐 → 냉방 절감
+    const winCool = hasW ? E.S2.rate * trades.window.f : 0;
+    if (hasW) ev.push(E.S2);
+
+    // 설비 교체: 기존 효율 → 1등급 효율 (가스 난방 건물 = 콘덴싱 보일러, 전기 냉난방 건물 = EHP)
+    let eqElec = 0, eqGas = 0;
+    if (hasH) {
+        const old = Q.oldByScore[trades.hvac.ageScore] || Q.oldByScore[2];
+        if (energy.gasHeated) eqGas = 1 - old.eff / Q.newBoilerEff;
+        else eqElec = 1 - old.cop / Q.newCop;
+        ev.push({ label: energy.gasHeated
+                    ? `콘덴싱 보일러 · 효율 ${Math.round(old.eff * 100)}%→92% (난방 ${(eqGas * 100).toFixed(1)}%)`
+                    : `인버터 EHP · COP ${old.cop}→4.2 (냉난방 ${(eqElec * 100).toFixed(1)}%)`,
+                  src: '에너지소비효율등급 1등급 기준' });
+    }
+
+    const rates = {
+        heatElec: combine(envHeat, eqElec),
+        heatGas:  combine(envHeat, eqGas),
+        cool:     combine(winCool, eqElec),
+        base:     0
     };
+    return { rates, evidence: ev };
 }
 
-function applySavings(bldg, energy, rates) {
+function applySavings(bldg, energy, r) {
     const { usage, households } = bldg;
     const after = {
-        elec: energy.elec.heat * (1 - rates.heat) + energy.elec.cool * (1 - rates.cool) + energy.elec.base * (1 - rates.base),
-        gas: energy.gas.heat * (1 - rates.heat)
+        elec: energy.elec.heat * (1 - r.heatElec) + energy.elec.cool * (1 - r.cool) + energy.elec.base * (1 - r.base),
+        gas: energy.gas.heat * (1 - r.heatGas)
     };
     const costBefore = elecCost(energy.elec.total, usage, households) + gasCost(energy.gas.total, usage);
     const costAfter = elecCost(after.elec, usage, households) + gasCost(after.gas, usage);
@@ -180,14 +194,13 @@ function applySavings(bldg, energy, rates) {
     return {
         costBefore, costAfter,
         annualSaving: costBefore - costAfter,
-        costSavingRate: costBefore > 0 ? (costBefore - costAfter) / costBefore : 0,
         primarySavingRate: primBefore > 0 ? (primBefore - primAfter) / primBefore : 0, // 성능개선 비율(추정)
         savedElecKwh: savedElec, savedGasMj: savedGas,
         co2Kg: savedElec * CONFIG.co2.elecKgPerKwh + savedGas * CONFIG.co2.gasKgPerMj
     };
 }
 
-/* ---------------- C. 기하학 물량 & 공사비 ---------------- */
+/* ---------------- 5. 기하학 물량 & 공사비 ---------------- */
 function geometry(usage, area, floors) {
     const A = area / floors;           // 바닥면적
     let W, insul, win;
@@ -202,21 +215,22 @@ function geometry(usage, area, floors) {
              windowArea: win, windowUnits: Math.ceil(win / CONFIG.cost.m2PerWindowUnit) };
 }
 
-function workCosts(usage, area, geo) {
+function tradeCosts(bldg, geo, energy) {
     const c = CONFIG.cost;
-    const hvacUnit = usage === '주거용' ? c.hvacRes : c.hvacCom;
-    const hvacCount = Math.max(1, Math.ceil(area / c.m2PerHvacUnit));
+    const useBoiler = energy.gasHeated;
+    const unit = useBoiler ? c.boiler : c.ehp;
+    const hvacCount = Math.max(1, Math.ceil(bldg.area / c.m2PerHvacUnit));
     return {
         window: { cost: geo.windowArea * c.windowPerM2 + geo.windowUnits * c.windowPerUnit,
                   basis: `PVC 이중창 ${Math.round(geo.windowArea).toLocaleString()}㎡ × 28만 원 + ${geo.windowUnits.toLocaleString()}개소 × 103,673원` },
         insul:  { cost: geo.insulTotal * c.insulPerM2,
                   basis: `PF보드 ${Math.round(geo.insulTotal).toLocaleString()}㎡(외벽 ${Math.round(geo.insulWall).toLocaleString()} + 옥상 ${Math.round(geo.roofArea).toLocaleString()}) × 40,016원` },
-        hvac:   { cost: hvacCount * hvacUnit,
-                  basis: `${usage === '주거용' ? '콘덴싱 보일러' : '인버터 EHP'} ${hvacCount}대 × ${hvacUnit.toLocaleString()}원` }
+        hvac:   { cost: hvacCount * unit, label: useBoiler ? '콘덴싱 보일러' : '인버터 EHP',
+                  basis: `${useBoiler ? '콘덴싱 보일러' : '인버터 EHP'} ${hvacCount}대 × ${unit.toLocaleString()}원` }
     };
 }
 
-/* ---------------- D. 금융 (대출 + 이자지원) ---------------- */
+/* ---------------- 6. 금융 (대출 + 이자지원) ---------------- */
 function financePlan(C, primarySavingRate, bldg, bankRate) {
     const F = CONFIG.finance;
     const isRes = bldg.usage === '주거용';
@@ -236,8 +250,8 @@ function financePlan(C, primarySavingRate, bldg, bankRate) {
         const i = rate / 12;
         return i === 0 ? principal / n : principal * i * Math.pow(1 + i, n) / (Math.pow(1 + i, n) - 1);
     };
-    const monthlyPayment = pmt(userRate, P);          // 이자지원 후 월 상환액
-    const monthlyNoSupport = pmt(bankRate, P);        // 이자지원 없을 때 월 상환액
+    const monthlyPayment = pmt(userRate, P);
+    const monthlyNoSupport = pmt(bankRate, P);
 
     // 원리금균등 상환 스케줄: 매월 잔액 × 지원율/12 = 정부가 대신 내는 이자
     let bal = P, govSupport = 0, userInterest = 0;
@@ -251,7 +265,7 @@ function financePlan(C, primarySavingRate, bldg, bankRate) {
              monthlyPayment, monthlyNoSupport, govSupport, userInterest };
 }
 
-/* ---------------- F. 회수기간 (DCF, 할인율 2%) ---------------- */
+/* ---------------- 7. 회수기간 (DCF, 할인율 2%) ---------------- */
 // Σ_{k=1..t} B/(1+r)^k ≥ K  →  t = -ln(1 - rK/B) / ln(1+r)
 function discountedPayback(K, B, r = CONFIG.discountRate) {
     if (B <= 0 || K * r >= B) return Infinity;
@@ -261,79 +275,75 @@ function discountedPayback(K, B, r = CONFIG.discountRate) {
 /* ---------------- 전체 실행 ---------------- */
 // bldg = { usage, area, floors, households, elecKwh, gasMj }
 function runEngine(bldg, answers, bankRate = CONFIG.finance.defaultBankRate) {
-    const parts = diagnoseParts(answers);
+    const trades = diagnoseTrades(answers);
     const energy = decomposeEnergy(bldg.elecKwh, bldg.gasMj, bldg.usage);
     const geo = geometry(bldg.usage, bldg.area, bldg.floors);
-    const work = workCosts(bldg.usage, bldg.area, geo);
-    const R = packageRates(parts);
-    const E = CONFIG.evidence;
+    const tc = tradeCosts(bldg, geo, energy);
 
-    const build = (key, name, desc, scope, rates, items, evidence) => {
-        const costs = { window: 0, insul: 0, hvac: 0 };
-        items.forEach(k => { costs[k] = work[k].cost; });
-        const C = costs.window + costs.insul + costs.hvac;
-        const sav = applySavings(bldg, energy, rates);
+    // 공종 조합 하나를 평가
+    const evaluate = (set) => {
+        const C = set.reduce((sum, k) => sum + tc[k].cost, 0);
+        let { rates, evidence } = comboRates(set, trades, energy);
+        let sav = applySavings(bldg, energy, rates);
+        if (set.length === 3) {   // 3개 공종 전부 → S5 전체 40%와 비교해 큰 값
+            const s5 = CONFIG.evidence.S5.rate * avg([trades.window.f, trades.insul.f, trades.hvac.f]);
+            const r5 = { heatElec: s5, heatGas: s5, cool: s5, base: s5 };
+            const sav5 = applySavings(bldg, energy, r5);
+            if (sav5.annualSaving > sav.annualSaving) { rates = r5; sav = sav5; }
+            evidence = [CONFIG.evidence.S5, ...evidence];
+        }
         const fin = financePlan(C, sav.primarySavingRate, bldg, bankRate);
-        const ownerTotal = C + fin.userInterest;              // 건축주 총부담 (정부 이자지원은 이미 제외)
-        return { key, name, desc, scope, rates, items, evidence, costs,
-                 basis: { window: items.includes('window') ? work.window.basis : '해당 없음',
-                          insul: items.includes('insul') ? work.insul.basis : '해당 없음',
-                          hvac: items.includes('hvac') ? work.hvac.basis : '해당 없음' },
+        const ownerTotal = C + fin.userInterest;       // 건축주 총부담 (정부 이자지원은 이미 제외)
+        const costs = { window: 0, insul: 0, hvac: 0 };
+        set.forEach(k => { costs[k] = tc[k].cost; });
+        return { set, scope: set.map(k => TRADE_NAMES[k]).join(' + '), rates, evidence, costs,
+                 basis: { window: set.includes('window') ? tc.window.basis : '해당 없음',
+                          insul: set.includes('insul') ? tc.insul.basis : '해당 없음',
+                          hvac: set.includes('hvac') ? tc.hvac.basis : '해당 없음' },
+                 hvacLabel: tc.hvac.label,
                  totalCost: C, ...sav, finance: fin, ownerTotal,
                  payback: discountedPayback(ownerTotal, sav.annualSaving) };
     };
 
-    // 실속형: 취약 부위(점수 ≤ 2) 중 회수기간이 가장 짧은 단일 공종 (취약 부위가 없으면 두 후보 모두 비교)
-    const econCands = [
-        build('econ', '실속형', '취약 부위 단일 보강 (최소 공사)', '창호 교체', R.econWindow, ['window'], [E.S1]),
-        build('econ', '실속형', '취약 부위 단일 보강 (최소 공사)', '단열 보강', R.econWall, ['insul'], [E.S3])
+    // 취약 순위: 점수 낮은 순 → 동점이면 단일 공종 회수기간 짧은 순 → 그래도 같으면 공사비 적은 순
+    const single = {};
+    ['window', 'insul', 'hvac'].forEach(k => { single[k] = evaluate([k]); });
+    const ranking = ['window', 'insul', 'hvac'].sort((a, b) =>
+        (trades[a].score - trades[b].score) ||
+        (single[a].payback - single[b].payback) ||
+        (single[a].totalCost - single[b].totalCost));
+
+    const mk = (pkgKey, name, desc, set) => Object.assign(evaluate(set), { key: pkgKey, name, desc });
+    const packages = [
+        mk('econ',  '실속형',   '취약 1순위 공종만 보강',        ranking.slice(0, 1)),
+        mk('smart', '스마트형', '취약 1·2순위 공종 보강',        ranking.slice(0, 2)),
+        mk('total', '종합형',   '창호·단열·설비 전 공종 개선',   ranking.slice(0, 3))
     ];
-    const weakIdx = [parts.window.weak, parts.wall.weak];
-    let pool = econCands.filter((_, i) => weakIdx[i]);
-    if (pool.length === 0) pool = econCands;
-    const better = (a, b) => (b.payback < a.payback || (b.payback === a.payback && b.totalCost < a.totalCost)) ? b : a;
-    const econ = pool.reduce(better);
-    econ.target = econ.scope === '창호 교체' ? parts.window.name : parts.wall.name;
 
-    const smart = build('smart', '스마트형', '외피 전면 개선 (단열 + 방위별 창호)', '단열 + 창호', R.smart,
-                        ['window', 'insul'], [E.S4, E.S2]);
-    const total = build('total', '종합형', '외피 + 고효율 설비 (액티브 포함)', '단열 + 창호 + 설비', R.total,
-                        ['window', 'insul', 'hvac'], [E.S5, E.S4, E.S2]);
-    const packages = [econ, smart, total];
+    // AI 추천: 기대수명(20년) 동안의 순이익(NPV)이 가장 큰 패키지
+    //   NPV = Σ_{t=1..20} B/(1+r)^t − (공사비 + 건축주 부담 이자)   → 모두 0 이하면 추천 없음
+    const life = CONFIG.maxPaybackYears, r = CONFIG.discountRate;
+    const annuity = (1 - Math.pow(1 + r, -life)) / r;
+    packages.forEach(p => { p.npv = p.annualSaving * annuity - p.ownerTotal; });
+    const best = packages.reduce((a, b) => (b.npv > a.npv ? b : a));
+    const rec = best.npv > 0 ? best : null;
+    packages.forEach(p => { p.isRecommended = p === rec; p.recommendReason = p === rec ? `${life}년 순이익 최대` : ''; });
 
-    // AI 추천 (기대수명 20년 내 회수 가능한 패키지만 대상)
-    //   ① 설비 15년 이상 노후 & 종합형 회수 가능 → 종합형
-    //   ② 이자지원 대상(성능개선 20%↑) 중 회수기간 최단
-    //   ③ 그 외 회수기간 최단      ④ 모두 20년 초과면 추천 없음
-    let rec = null, reason = '';
-    const ok = p => p.payback <= CONFIG.maxPaybackYears;
-    const feasible = packages.filter(ok);
-    const eligible = feasible.filter(p => p.finance.eligible);
-    if (parts.equip.veryOld && ok(total)) {
-        rec = total; reason = '설비 15년 이상 노후 → 설비 교체 포함';
-    } else if (eligible.length) {
-        rec = eligible.reduce(better); reason = '이자지원 대상 중 회수기간 최단';
-    } else if (feasible.length) {
-        rec = feasible.reduce(better); reason = '회수기간 최단';
-    }
-    packages.forEach(p => { p.isRecommended = p === rec; p.recommendReason = p === rec ? reason : ''; });
-
-    return { parts, energy, geo, packages, recommended: rec };
+    return { trades, ranking, energy, geo, packages, recommended: rec };
 }
 
 /* 월별 요금 곡선 (만 원): 난방·냉방·기타를 각각 배분 후 패키지 절감률 적용 */
-function monthlyCurves(bldg, energy, rates) {
+function monthlyCurves(bldg, energy, r) {
     const M = CONFIG.monthly;
     const before = [], after = [];
-    const eP = (kwh) => elecCost(kwh, bldg.usage, bldg.households) / Math.max(kwh, 1e-9); // 평균 단가
-    const priceE = energy.elec.total > 0 ? eP(energy.elec.total) : 0;
+    const priceE = energy.elec.total > 0 ? elecCost(energy.elec.total, bldg.usage, bldg.households) / energy.elec.total : 0;
     const priceG = CONFIG.tariff.gas[bldg.usage];
     for (let m = 0; m < 12; m++) {
         const heatE = energy.elec.heat * M.heat[m], coolE = energy.elec.cool * M.cool[m], baseE = energy.elec.base / 12;
         const heatG = energy.gas.heat * M.heat[m];
         before.push((heatE + coolE + baseE) * priceE + heatG * priceG);
-        after.push((heatE * (1 - rates.heat) + coolE * (1 - rates.cool) + baseE * (1 - rates.base)) * priceE
-                   + heatG * (1 - rates.heat) * priceG);
+        after.push((heatE * (1 - r.heatElec) + coolE * (1 - r.cool) + baseE * (1 - r.base)) * priceE
+                   + heatG * (1 - r.heatGas) * priceG);
     }
     const toMan = v => Math.round(v / 10000 * 10) / 10;
     return { before: before.map(toMan), after: after.map(toMan) };

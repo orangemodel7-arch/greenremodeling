@@ -316,15 +316,15 @@ function renderPackageCards() {
     const container = document.getElementById('packages-container');
     if (!container) return;
 
-    const d = engineResult.parts;
-    const partLine = [d.window, d.wall, d.solar, d.equip]
-        .map(p => `${p.name} ${p.weak ? '<b style="color:#d84c4c;">취약</b>' : '양호'}`).join(' · ');
+    const T = engineResult.trades;
+    const rankLine = engineResult.ranking
+        .map((k, i) => `${'①②③'.at(i)} ${T[k].name}(${T[k].questions} 평균 ${T[k].score.toFixed(1)}점)`).join(' ');
     const heatType = engineResult.energy.gasHeated ? '가스 난방 건물' : '전기 냉난방 건물';
 
     let html = `<div style="font-size:12px; color:#666; line-height:1.6; margin-bottom:4px;">
-        설문 진단: ${partLine}<br>에너지 특성: ${heatType}</div>`;
+        설문 취약 순위: ${rankLine}<br>(1=불량 ~ 3=양호) · 에너지 특성: ${heatType}</div>`;
     if (!engineResult.recommended) {
-        html += `<div style="font-size:12px; color:#d84c4c; margin-bottom:4px;">현재 에너지 사용량에 비해 공사비가 커서 ${CONFIG.maxPaybackYears}년 안에 회수되는 패키지가 없습니다. 부분 보강을 검토하거나 그린리모델링 컨설팅 지원사업(무상 현장진단)을 신청해 보세요.</div>`;
+        html += `<div style="font-size:12px; color:#d84c4c; margin-bottom:4px;">현재 에너지 사용량에 비해 공사비가 커서 ${CONFIG.maxPaybackYears}년 동안 순이익이 나는 패키지가 없습니다. 부분 보강을 검토하거나 그린리모델링 컨설팅 지원사업(무상 현장진단)을 신청해 보세요.</div>`;
     }
 
     calculatedPackages.forEach((pkg, idx) => {
@@ -334,12 +334,13 @@ function renderPackageCards() {
         <div class="data-card" style="cursor:pointer; position:relative; ${borderStyle} transition: all 0.2s;" onclick="selectPackage(${idx})">
             ${pkg.isRecommended ? `<div class="badge green" style="position:absolute; top:-10px; right:15px; z-index:10; font-size:11px; padding:4px 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">AI 추천✨ ${pkg.recommendReason}</div>` : ''}
             <h3 style="margin:0 0 3px 0; color:#1a4d41; font-size:18px;">${pkg.name} <span style="font-size:12px; color:#888; font-weight:400;">${pkg.scope}</span></h3>
-            <p style="font-size:12px; color:#666; margin:0 0 4px 0;">${pkg.desc}${pkg.target ? ` · 진단 대상: ${pkg.target}` : ''}</p>
+            <p style="font-size:12px; color:#666; margin:0 0 4px 0;">${pkg.desc}</p>
             <p style="font-size:11px; color:#999; margin:0 0 10px 0;">근거: ${pkg.evidence.map(e => e.src).join(', ')}</p>
             <div class="data-row" style="padding:6px 0;"><span>총 예상 공사비</span><strong style="color:#1a4d41;">${man(pkg.totalCost)}</strong></div>
             <div class="data-row" style="padding:6px 0;"><span>연간 절감액 (절감률)</span><strong>${man(pkg.annualSaving)} (${pct(pkg.primarySavingRate)})</strong></div>
             <div class="data-row" style="padding:6px 0;"><span>월 절감액 vs 월 상환액</span><strong>${man(monthlySave)} / ${man(pkg.finance.monthlyPayment)}</strong></div>
             <div class="data-row" style="padding:6px 0;"><span>정부 지원</span>${supportBadge(pkg.finance)}</div>
+            <div class="data-row" style="padding:6px 0;"><span>${CONFIG.maxPaybackYears}년 순이익 (할인율 2%)</span><strong>${man(pkg.npv)}</strong></div>
             <div style="display:flex; justify-content:space-between; font-size:14px; color:#f39c12; font-weight:bold; margin-top:6px;">
                 <span>투자 회수 기간</span><span>${yrs(pkg.payback)}</span>
             </div>
@@ -359,7 +360,7 @@ function selectPackage(idx) {
     document.getElementById('cost-hvac').innerText = won(pkg.costs.hvac);
     document.getElementById('cost-total').innerText = won(pkg.totalCost);
     document.getElementById('label-insul').innerText = simData.bldg.usage === '주거용' ? '단열 보강 (북측 외벽·옥상)' : '단열 보강 (외벽·옥상)';
-    document.getElementById('label-hvac').innerText = simData.bldg.usage === '주거용' ? '설비 교체 (콘덴싱 보일러)' : '설비 교체 (인버터 EHP)';
+    document.getElementById('label-hvac').innerText = `설비 교체 (${pkg.hvacLabel})`;
 
     document.getElementById('basis-window').innerText = pkg.basis.window;
     document.getElementById('basis-insul').innerText = pkg.basis.insul;
@@ -378,7 +379,8 @@ function renderEnergyChart() {
     document.getElementById('stat-saving-amount').innerText = won(pkg.annualSaving);
 
     const r = pkg.rates;
-    const rateTxt = [`난방 ${pct(r.heat)}`, `냉방 ${pct(r.cool)}`, `기타 ${pct(r.base)}`].join(' · ');
+    const heatRate = simData.energy.gasHeated ? r.heatGas : r.heatElec;
+    const rateTxt = [`난방 ${pct(heatRate)}`, `냉방 ${pct(r.cool)}`, `기타 ${pct(r.base)}`].join(' · ');
     document.getElementById('saving-breakdown').innerText =
         `적용 절감률(학술 상수 × 설문 보정): ${rateTxt}\n근거: ${pkg.evidence.map(e => e.label + ' — ' + e.src).join(' / ')}`;
 
